@@ -1,0 +1,104 @@
+---
+title: "Marmot_Final_Mapping"
+author: "Mark Thompson"
+date: "2022-12-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading packages
+
+
+```{r cars}
+install.packages("terra")
+library(terra)
+install.packages("sp")
+library(sp)
+install.packages("sf")
+library(sf)
+install.packages("stars")
+library(stars)
+install.packages("raster")
+library(raster)
+
+```
+
+## Load all Final Mapping Products
+
+All mapping products, including the presence and pseudo-absence predictor variables and explanatory rasters are loaded.
+
+```{r map_load, echo=FALSE}
+
+## Tsay Keh Dene Nation study area
+
+TKD_Territory.shp <- vect(paste0(here::here("Spatial_Polygons"),"/TKD_Territory.shp"))
+
+terra::crs(TKD_Territory.shp) <- "epsg:32609"
+TKD_Territory.shp = terra::project(TKD_Territory.shp,  "epsg:32609")
+
+## BEC Site Units
+BEC_poly <- st_read(paste0(here::here("BEC","BEC_BIOGEOCLIMATIC_POLY"),"/BEC_POLY_polygon.shp"))
+##OR
+##BEC_poly <- vect(paste0(dir(here::here("BEC","BEC_BIOGEOCLIMATIC_POLY"), pattern = "BEC_POLY_polygon.shp", full.names = TRUE)))
+TKD_Territory <- st_read(paste0(here::here("Spatial_Polygons"),"/TKD_Territory.shp"))
+TKD_Territory <- st_transform(TKD_Territory, "EPSG:3005")
+
+BEC_poly <- st_crop(BEC_poly,TKD_Territory)
+
+TKD_Territory <- terra::vect(TKD_Territory)
+BEC_poly <-  terra::vect(BEC_poly)
+BEC_habitat = terra::subset(BEC_poly, BEC_poly$MAP_LABEL=="BAFAun" | BEC_poly$MAP_LABEL=="ESSFmcp" | BEC_poly$MAP_LABEL=="ESSFmvp" | BEC_poly$MAP_LABEL=="ESSFwcp" | BEC_poly$MAP_LABEL== "SWBmks")
+BEC_habitat <- terra::crop(BEC_habitat,TKD_Territory)
+BEC_habitat <- terra::project(BEC_habitat, "epsg:32609")
+BEC_habitat_sf <- sf::st_as_sf(BEC_habitat[,7])
+
+## Presence Points
+Marmot.presence <- read.csv(paste0(here::here("HSDM_Marmot", "Inputs"),"/","MarmotPoints.csv"), stringsAsFactors = FALSE)
+ 
+  Marmot.presence_mat <- cbind(Marmot.presence$e, Marmot.presence$n)
+  row.names(Marmot.presence_mat) <- 1:nrow(Marmot.presence_mat)
+  
+  Z9CRS <- CRS("+proj=utm +zone=9 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+  Marmot.presence <- vect(SpatialPoints(Marmot.presence_mat, proj4string = Z9CRS))
+  
+## Pseudoabsence Points
+pseu_abs <- vect(paste0(here::here("HSDM_Marmot", "Outputs"),"/pseu_abs.shp"))
+
+## Explanatory rasters
+
+ExpRasters <- c("Climate_MSP", "Climate_DD_0", "Climate_NFFD", "Climate_PAS", "habitat_aspect", "habitat_slope", "TKDN_Rough", "HR_hibernate", "HR_feeding", "Vegetation", "BEC_habitat", "BEC_habitata")
+
+Rasters_list <- list()
+Rasters_stack <- list()
+
+for(i in 1:length(ExpRasters)){
+  Rasters_list[[i]] <- rast(paste0(here::here("HSDM_Marmot", "Inputs"),"/",ExpRasters[i],".tif"))
+  Rasters_stack[[i]] <- raster(Rasters_list[[i]])
+  }
+
+Rasters_stack <- stack(Rasters_stack)
+
+## Sampling Plan
+
+Marmot_SamplePlan <- vect(paste0(here::here("HSDM_Marmot", "Outputs", "Marmot_SamplePlan"),"/Marmot_SamplePlan.shp"))
+
+```
+
+## Final Mapping
+
+All mapping products are plotted.
+
+```{r Mapping, echo=FALSE}
+
+plot(BEC_habitat_sf["MAP_LABEL"],main="BEC Site Units")
+plot(TKD_Territory.shp)
+plot(Marmot.presence, pch=3, add=TRUE, cex=0.2, main="present")
+plot(pseu_abs, pch=10, add=TRUE,col="red", cex=0.2)
+plot(TKD_Territory.shp)
+plot(Marmot_SamplePlan, add=TRUE)
+plot(Rasters_stack)
+
+```

@@ -1,0 +1,221 @@
+---
+title: "Marmot_Terrain"
+author: "Mark Thompson"
+date: '2022-06-15'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r }
+if(!require(terra)){!install.packages("terra")}
+if(!require(raster)){!install.packages("raster")}
+if(!require(sf)){!install.packages("sf")}
+if(!require(stars)){!install.packages("stars")}
+if(!require(here)){!install.packages("here")}
+if(!require(spatialEco)){!install.packages("spatialEco")}
+if(!require(exactextractr)){!install.packages("exactextractr")}
+
+library(terra)
+library(raster)
+library(sf)
+library(stars)
+library(here)
+library(spatialEco)
+library(exactextractr)
+
+```
+
+## Next
+
+  Ratings
+  
+Class, Rating Name,	Life Requisite, BGC Unit (proxy for elevation), Slope (degrees), Aspect
+1	High
+    Hibernating	  (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	0-20,	Warm or Cool
+		Food          (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	0-20,	Warm  
+		
+2	Moderate
+    Hibernating	  (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	20.1 - 40,	Warm or Cool
+		Food	        (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	20.1 - 40,	Warm
+		Food	        (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	0-20,       Cool 
+		
+3	Low
+    Hibernating	  (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	40.1 - 60,	Warm or Cool
+		Food        	(BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	40.1 - 60,	Warm or Cool
+		
+4	Nil
+    Hibernating   (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	>60.1,	Any
+		Food	        (BAFAun, ESSFmcp, ESSFmvp, ESSFwcp, SWBmks),	>60.1,	Any
+
+Aspect	Def
+136 - 285	Warm = 1
+286 - 135	Cool = 2
+
+
+```{r echo=FALSE}
+
+## Remove comments the top lines in this code section to re-run the raster classifications with the raster package. The lines that follow open what is saved from these lines of code. No need to re-run, but the information is retained for future applications:
+
+#TKDN_DEM <- rast(dir(here("DEM","ASTER2_v3_GDEM"), pattern="ASTER2tif.asc$", full.names = TRUE))
+
+#TKDN_Slope <- terrain(TKDN_DEM, v="slope", neighbors=8, unit="degrees")
+#TKDN_Aspect <- terrain(TKDN_DEM, v="aspect", neighbors=8, unit="degrees")
+#TKDN_Rough <- terrain(TKDN_DEM, v="roughness", neighbors=8)
+
+#  writeRaster(TKDN_Slope, paste0(here("DEM", "Terrain"),"/","TKDN_Slope.tif"), overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+#  writeRaster(TKDN_Aspect, paste0(here("DEM", "Terrain"),"/","TKDN_Aspect.tif"), overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+#  writeRaster(TKDN_Rough, paste0(here("DEM", "Terrain"),"/","TKDN_Rough.tif"), overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+  
+TKDN_Slope <- rast(paste0(here::here("DEM", "Terrain"),"/","TKDN_Slope.tif"))
+TKDN_Aspect <- rast(paste0(here::here("DEM", "Terrain"),"/","TKDN_Aspect.tif"))
+TKDN_Rough <- rast(paste0(here::here("DEM", "Terrain"),"/","TKDN_Rough.tif"))
+
+## This is commented out to allow for retrieval, but this is the code that was used to create the SpatRasters habitat_slope and
+## habitat_aspect:
+
+#habitat_slope_mat <- matrix(nrow = 4, ncol = 3)
+#habitat_slope_mat[1, ] <- c(0,20,1)
+#habitat_slope_mat[2, ] <- c(20,40,2)
+#habitat_slope_mat[3, ] <- c(40,60,3)
+#habitat_slope_mat[4, ] <- c(60,minmax(TKDN_Slope)[2],4)
+
+#habitat_slope <- classify(TKDN_Slope, habitat_slope_mat, include.lowest=TRUE)
+
+#writeRaster(habitat_slope, paste0(here("DEM", "Terrain"),"/","habitat_slope.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+
+#terra::freq(TKDN_Aspect)
+
+#habitat_aspect_mat <- matrix(nrow = 3, ncol = 3)
+#habitat_aspect_mat[2, ] <- c(0,135,2) # from,to = 2 cool
+#habitat_aspect_mat[1, ] <- c(135,285,1) # from,to = 1 warm
+#habitat_aspect_mat[3, ] <- c(285,360,2) # from,to = 2 cool
+
+#habitat_aspect <- classify(TKDN_Aspect, habitat_aspect_mat, include.lowest=TRUE)
+#writeRaster(habitat_aspect, paste0(here("DEM", "Terrain"),"/","habitat_aspect.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+
+
+habitat_slope <- terra::rast(paste0(here::here("DEM", "Terrain"),"/","habitat_slope.tif"))
+habitat_aspect <- terra::rast(paste0(here::here("DEM", "Terrain"),"/","habitat_aspect.tif"))
+
+BEC_poly <- terra::vect(paste0(dir(here::here("BEC","BEC_BIOGEOCLIMATIC_POLY"), pattern = "BEC_POLY_polygon.shp", full.names = TRUE)))
+
+TKD_Territory.shp <- terra::vect(paste0(here::here("Spatial_Polygons"),"/TKD_Territory.shp"))
+
+habitat_slope <- terra::project(habitat_slope, "EPSG:32609")
+habitat_aspect <- terra::project(habitat_aspect, "EPSG:32609")
+
+habitat_slope <- terra::crop(habitat_slope,TKD_Territory.shp)
+habitat_aspect <- terra::crop(habitat_aspect,TKD_Territory.shp)
+
+
+# create habitat Rating Class (RC) from conditions in slope aspect. Claudia also separates overwintering from feeding into 2 types of habitat models. First creating a copy of the slope to work with:
+RC_H <- habitat_slope
+RC_H[] <- NA
+RC_F <- habitat_aspect
+RC_F[] <- NA
+# fill based on conditions
+
+		
+## Rating High = 1
+#1,	1 or 2,	to	1
+#1,	1     	to	1
+#Hibernating
+RC_H[habitat_slope == 1 & (habitat_aspect == 1 | habitat_aspect == 2)] <- 1
+#Food
+RC_F[habitat_slope == 1 & habitat_aspect == 1] <- 1
+
+## Rating Moderate = 2
+#2,	1 or 2	to	2
+#2,	1	      to	2
+#1,	2	      to	2
+## Hibernating
+RC_H[habitat_slope == 2 & (habitat_aspect == 1 | habitat_aspect == 2)] <- 2
+## Food
+RC_F[(habitat_slope == 2 & habitat_aspect == 1) | (habitat_slope == 1 & habitat_aspect == 2)] <- 2
+
+## Rating Low = 3
+#3,	1 or 2	to	3
+#3,	1 or 2	to	3
+## Hibernating and Food (same)
+RC_H[habitat_slope == 3 & (habitat_aspect == 1 | habitat_aspect == 2)] <- 3
+RC_F[habitat_slope == 3 & habitat_slope == 2 & (habitat_aspect == 1 | habitat_aspect == 2)] <- 3
+
+## Rating Lowest = 4
+#4,	1 or 2	to	4
+#4 , 1 or 2	to	4
+## Hibernating and Food (same)
+RC_H[habitat_slope == 4] <- 4
+RC_F[habitat_slope == 4] <- 4
+
+
+
+writeRaster(RC_H, paste0(here::here("Habitat"),"/","Hibernate.tif"),overwrite=TRUE, gdal="COMPRESS=DEFLATE")
+writeRaster(RC_F, paste0(here::here("Habitat"),"/","Feeding.tif"),overwrite=TRUE, gdal="COMPRESS=DEFLATE")
+
+
+## Something to consider from the spatialEco package
+#r <- raster(TKDN_Aspect)
+#habitat_hli <- hli(r)
+
+#writeRaster(habitat_hli, paste0(here("DEM", "Terrain"),"/","habitat_hli.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+
+habitat_hli <- terra::rast(paste0(here::here("DEM", "Terrain"),"/","habitat_hli.tif"))
+
+
+```
+
+Loading the BEC sets and masking to the exclusive set
+
+
+```{r}
+
+sBEC_poly <- vect(paste0(dir(here("BEC","BEC_BIOGEOCLIMATIC_POLY"), pattern = "BEC_POLY_polygon.shp", full.names = TRUE)))
+
+TKD_Territory.shp <- vect(paste0(here("Spatial_Polygons"),"/TKD_Territory.shp"))
+TKD_Territory.shp <- project(TKD_Territory.shp, "EPSG:3005")
+
+BEC_habitat = subset(BEC_poly, BEC_poly$BGC_LABEL=="BAFAun" | BEC_poly$BGC_LABEL=="ESSFmcp" | BEC_poly$BGC_LABEL=="ESSFmvp" | BEC_poly$BGC_LABEL=="ESSFwcp" | BEC_poly$BGC_LABEL== "SWB mks")
+
+BEC_habitat <- crop(BEC_habitat,TKD_Territory.shp)
+
+BEC_habitat <- project(BEC_habitat, "epsg:32609")
+
+## Classify by BEC_habitat MAP_LABEL, which is the 7th variable in, with a numeric factor.
+map_labels <- unique(BEC_habitat$MAP_LABEL)
+
+## The BEC_habitat variable can be all classified as 1 or varied in the model. This gives the option to vary and weight the site series. Claudia Howers suggested "[6:02 PM] Claudia Houwers BAFAun would be highest. All the other would be of equal value".
+
+#BEC_habitat$BECNum <- "x"
+#BEC_habitat[BEC_habitat$MAP_LABEL == "BAFAun",19] <- 2
+#BEC_habitat[BEC_habitat$MAP_LABEL == "ESSFmvp",19] <- 1
+#BEC_habitat[BEC_habitat$MAP_LABEL == "SWBmks",19] <- 1
+#BEC_habitat[BEC_habitat$MAP_LABEL == "ESSFwcp",19] <- 1
+#BEC_habitat[BEC_habitat$MAP_LABEL == "ESSFmcp",19] <- 1
+#BEC_habitatNUM <- BEC_habitat[,19]
+
+BEC_habitatNUM <- sf::st_as_sf(BEC_habitat[,7])
+BEC_habitatr = st_rasterize(BEC_habitatNUM)
+BEC_habitatr <- rast(round(BEC_habitatr/100))
+
+## This is an estimation of Claudia's classification
+BEC_habitatr_mat <- matrix(nrow = 5, ncol = 3)
+BEC_habitatr_mat[1, ] <- c(4.5,6,2) # from,to = 2 
+BEC_habitatr_mat[2, ] <- c(0,5,1) # from,to = 1
+
+BEC_habitatr <- classify(BEC_habitatr, BEC_habitatr_mat, include.lowest=TRUE)
+
+ terra::writeRaster(BEC_habitatr, filename=file.path(paste0(here("HSDM_Marmot", "Inputs"),"/","BEC_habitat.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+```
+
+
+

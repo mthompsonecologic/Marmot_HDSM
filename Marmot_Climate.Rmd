@@ -1,0 +1,161 @@
+---
+title: "DEM Climate"
+author: "Mark Thompson"
+date: '2022-06-08'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r packages}
+
+install.packages("terra")
+install.packages("raster")
+install.packages("here")
+
+library(terra)
+library(raster)
+library(here)
+
+```
+
+## Importing, merging and cropping the Aster2 DEM
+
+
+```{r DEM, echo=FALSE}
+
+DEM_dir <- grep(pattern="_dem.tif$", dir(here("DEM", "ASTER2_v3_GDEM")), value=TRUE)
+
+for(i in 1:length(DEM_dir)){
+  assign("temprast", rast(paste0(here("DEM", "ASTER2_v3_GDEM"),"/",DEM_dir[i])))
+  NAflag(temprast) <- -9999
+  writeRaster(temprast, paste0(here("DEM", "ASTER2_v3_GDEM"),"/",'ASTER2tif_',i,".asc"), overwrite=TRUE)  
+}
+
+for(i in 1:length(DEM_dir)){
+  if(i==1){
+  assign("ASTER2tif",rast(paste0(here("DEM", "ASTER2_v3_GDEM"),"/",DEM_dir[i])))
+  }else{
+    assign("ASTER2temp",rast(paste0(here("DEM", "ASTER2_v3_GDEM"),"/",DEM_dir[i])))
+    ASTER2temp = extend(ASTER2temp, ASTER2tif)
+    ASTER2tif <- merge(ASTER2temp, ASTER2tif)}
+}
+
+TKD_Territory.shp <- vect(paste0(here("Spatial_Polygons"),"/TKD_Territory.shp"))
+TKD_Territory.shp = terra::project(TKD_Territory.shp,  "epsg:4326")
+
+NAvalue(ASTER2tif) <- -9999
+
+## Note: ClimateBC software requires:
+## inputFile <- projectRaster(inputFile,  crs="+proj=longlat +datum=WGS84")
+
+ASTER2tif <- crop(ASTER2tif, TKD_Territory.shp, mask=TRUE)
+
+writeRaster(ASTER2tif, paste0(here("DEM", "ASTER2_v3_GDEM"),"/",'ASTER2tif.asc'))  
+
+ASTER2tif <- as(ASTER2tif, "Raster")
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+
+## The following lists the directory containing the ASTER2 Digital Elevation Models (DEMs) that are saved as asc files. ## It converts these to the CRS required of the ClimateBC software.
+
+Aster2_asc <- dir(path = here("DEM", "ASTER2_v3_GDEM"), full.names = FALSE, pattern = "ASTER2tif_(\\d|\\d\\d).asc$")
+
+for(i in 1:length(Aster2_asc)){
+  inputFile = raster(paste0(here("DEM", "ASTER2_v3_GDEM"), "/", Aster2_asc[i]))
+  inputFile <- projectRaster(inputFile,  crs="+proj=longlat +datum=WGS84")
+  NAvalue(inputFile) <- -9999
+  writeRaster(inputFile, paste0(here("ClimateBC", "InputFiles"),"/",paste0('ASTER2tif_',i,'.asc')),overwrite=TRUE)
+}
+
+```
+
+
+The following is designed to operate the ClimateBC software through rstats, but I was unable to get this to work. I e-mailed Dr. Wong for further instruction. However, the output was calculated manually through the ClimateBC tool and the data is imported in the code section that follows this.
+
+```{r}
+#for raster data --- 
+
+setwd("E:/EcoLogic/CCE ESI/Marmots 2022/ClimateBC");getwd() # it must be the home directory of ClimateBC
+exe <- "ClimateBC_v7.20.exe"
+
+#for raster data --- 
+inputFile = '/InputFiles\\northVan90.asc'
+outputDir = '/Test' 
+yearPeriod = '/Normal_1981_2010.nrm' 
+system2(exe,args= c('/Y', yearPeriod, inputFile, outputDir))
+
+
+```
+
+Importing the Climate BC results, merging, and clipping to Tsay Keh Dene territory.
+
+Relevant outputs:
+
+MSP
+May to September precipitation (mm),	Yes	Research shows the summer precipitation is directly correlated with marmot health and increase of body mass during summer months
+
+DD<0
+degree-days below 0°C, chilling degree-days	Yes	Sort of useful. We know it will freeze in the alpine but alpine areas with less degree days below 0C could mean less hibernation time and more eating time
+
+NFFD
+the number of frost-free days	Yes	Useful as a measure of the length of the growing season
+
+PAS
+precipitation as snow (mm) between August in previous year and July in current year	Yes	Snow depth relates correlates to the function of snow as insulation during hibernation
+
+
+
+
+```{r}
+
+Climate_Results <- dir(here("ClimateBC", "OutputFiles"), pattern="T\\d")
+Climate_vars <- c("MSP.asc", "DD_0.asc", "NFFD.asc", "PAS.asc")
+Rasters_list <- list()
+
+climate_filen <- dir(path=here("ClimateBC", "OutputFiles"), pattern = Climate_vars[length(Climate_vars)])
+
+if(length(climate_filen) == 0){
+
+      for(n in 1:length(Climate_vars)){
+      climate_filen <- dir(path=here("ClimateBC", "OutputFiles"), pattern = Climate_vars[n])
+      
+      if(length(climate_filen) == 0){
+
+        for(i in 1:length(Climate_Results)){
+
+          assign("temp_c",dir(paste0(here("ClimateBC", "OutputFiles", Climate_Results[i]), "/Normal_1991_2020Y/"), pattern = Climate_vars[n]))
+        Rasters_list[[i]] <- rast(paste0(here("ClimateBC", "OutputFiles",Climate_Results[i]),"/Normal_1991_2020Y/",temp_c))
+
+          if(i == length(Climate_Results)){
+            b <- sapply(Rasters_list, \(i) ext(i) |> as.vector())
+            e <- ext(min(b[1,]), max(b[2,]), min(b[3,]), max(b[4,]))
+            Rasters_list[[i]] <- extend(Rasters_list[[i]],e)
+            Rasters_sprc <- terra::sprc(Rasters_list)
+            temprast <- mosaic(Rasters_sprc)
+            temprast <- crop(temprast,TKD_Territory.shp, mask=TRUE)
+            terra::writeRaster(temprast, filename=file.path(paste0(here("ClimateBC", "OutputFiles"),"/","TKDN_",Climate_vars[n],".tif")), filetype="GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+            Rasters_list <- list()        
+          }
+          else{next()}
+        }
+      }else{next()}
+    }
+}
+
+
+```
+
+

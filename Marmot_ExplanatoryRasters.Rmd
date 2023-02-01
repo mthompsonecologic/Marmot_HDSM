@@ -1,0 +1,363 @@
+---
+title: "Marmot_ExplanatoryRasters"
+author: "MThompson"
+date: '2022-07-14'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r }
+
+install.packages("here")
+install.packages("terra")
+install.packages("RColorBrewer")
+install.packages("rasterdiv")
+
+library(here)
+library(terra)
+library(RColorBrewer)
+library(rasterdiv)
+
+
+
+
+```
+
+## Markdown Glossary
+The following raster explanatory variable layers are established in the respective *.Rmd files:
+
+  Marmot_Sentinel.Rmd = Processes Sentinel-2 data to create an Enhanced Vegetation Index Version 2 raster output for 2020-2021. The script is developed to process all years of Sentinel-2 seasonal data, but in the initial model only 2021 EVI2 is used.
+
+  Marmot_Terrain.Rmd = Processes the DEM to slope, aspect, roughness, and hli (see terra package). These layers were calculated from from the Aster2_v3 at 17 m X 30 m resolution. The terrain script also builds the rating class model, which is a four class model (Nil, Low, Moderate, High) on slope and aspect. There are two habitat rating class models: 1. Hibernating and 2. Feeding.
+  
+  Marmot_BEC.Rmd = This is script that prepares the Biogeoclimatic Ecosystem Classification (BEC) raster. I was unable to resolve correct rasterization of the vector data using the new rstats packages (stars and terra). It may be the case that these packages are still fairly new and under development. I interact with the authors online, but used QGIS GDAL to create the BEC rasters. The code is retained as it is a work in progress to keep all work contained in the rstats environment.
+
+  Marmot_Climate.Rms = Processes the Aster DEM using the ClimateBC software for climate normals (1991-2021) for:
+
+    TKDN_MSP.asc = May to September precipitation (mm),	Yes	Research shows the summer precipitation is directly correlated with marmot health and increase of body mass during summer months.
+
+    TKDN_DD_0.asc = degree-days below 0°C, chilling degree-days	Yes	Sort of useful. We know it will freeze in the alpine but alpine areas with less degree days below 0C could mean less hibernation time and more eating time.
+
+    TKDN_NFFD.asc = the number of frost-free days	Yes	Useful as a measure of the length of the growing season.
+
+    TKDN_PAS.asc = precipitation as snow (mm) between August in previous year and July in current year	Yes	Snow depth relates correlates to the function of snow as insulation during hibernation.
+
+## Bringing the explanatory rasters together
+
+All the rasters that have been created by the different markdown parts (see Glossary) arrive with different resolutions and projections. Each needs to be projected and resampled to the 10 m Vegetation raster that came from Sentinel-2. The rasters are downsampled using bi-linear or nearest neighbor method as described in the terra package (Hijmans chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/https://cran.r-project.org/web/packages/terra/terra.pdf).
+
+ 
+ ## PART 1 - This code chunk projects each raster input to the Sentinel-2 vegetation raster (10 m) using "align = TRUE" and saves the layers separately. There is a difference between projection and resampling.
+ 
+This section can be skipped as the data is also projected in Part II below. This chunk of code is retained because the listed data structures can be recalled if needed in the downstream script.
+
+```{r pressure, echo=FALSE}
+
+Vegetation <- rast(dir(here("Sentinel-2", "EVI2"), pattern="EVI2_2021_TKDN.tif", full.names = TRUE))
+
+Terrain_list <- list()
+Terrain <- dir(here("DEM", "Terrain"), pattern = paste0(c("habitat_aspect.tif", "habitat_slope.tif", "TKDN_Rough.tif", "TKDN_Slope.tif"), collapse = "|"), full.names = TRUE)
+Terrainfiles <- c("habitat_aspect.tif", "habitat_slope.tif", "TKDN_Rough.tif", "TKDN_Slope.tif")
+
+for(i in 1:length(Terrain)){
+    Terrain_list[[i]] <- rast(Terrain[i])
+    Terrain_list[[i]] <- project(Terrain_list[[i]], Vegetation, align = TRUE)
+    writeRaster(Terrain_list[[i]], paste0(here("HSDM_Marmot", "Inputs"),"/",Terrainfiles[i]),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+}
+
+Climate_list <- list()
+Climate <- dir(here("ClimateBC", "outputFiles"), pattern=".tif$", full.names = TRUE)
+Climatefiles <- as.character(dir(here("ClimateBC", "outputFiles"), pattern=".tif$", full.names = FALSE))
+
+for(i in 1:length(Climate)){
+    Climate_list[[i]] <- rast(Climate[i])
+    Climate_list[[i]] <- project(Climate_list[[i]], Vegetation, align = TRUE)
+    writeRaster(Climate_list[[i]], paste0(here("HSDM_Marmot", "Inputs"),"/",Climatefiles[i]),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+}
+
+```
+
+## Part II - Individual SpatRasters. Reference Terrain_list[[i]] or Climate_list[[i]] for individual products or unslist a SpatRasterCollection or SpatVectorCollection "...that are equivalent to lists of SpatRaster or SpatVector objects" (Hijmans 2022. Package ‘terra’.)
+
+
+```{r pressure, echo=FALSE}
+
+Terrain <- rast(dir(here("DEM", "Terrain"), pattern = paste0(c("habitat_aspect.tif", "habitat_slope.tif", "TKDN_Rough.tif", "TKDN_Slope.tif"), collapse = "|"), full.names = TRUE))
+Climate <- rast(dir(here("ClimateBC", "outputFiles"), pattern=".tif$", full.names = TRUE))
+
+## A simpler alternative to the loops in Part 1 - this creates a SpatRasterCollection:
+Terrain <- project(Terrain, Vegetation, align = TRUE)
+Climate <- project(Climate, Vegetation, align = TRUE)
+
+writeRaster(Terrain, paste0(here("HSDM_Marmot", "Inputs"),"/","Terrain_vars.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+writeRaster(Climate, paste0(here("HSDM_Marmot", "Inputs"),"/","Climate_vars.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+
+```
+
+## Final Raster Habitat Processing
+
+Note: If Part I is used (above), you can reference a call to Terrain_list[[i]] or Climate_list[[i]]. This chunk refers  gives the same result, but organizes the data into a list for use in GAM packages (Marmot_Model.Rmd).
+
+This code chunk works on the BEC habitat classifications, BEC_habitat.tif, that were created in Marmot_BEC.Rmd. The different BEC units are revalued for modelling. The call to BEC_habitat.tif has the layer and coded values as:
+
+"BAFAun" = "0", "ESSFmcp" = "1", "ESSFmvp" = "2", "ESSFwcp" = "3", "SWBmks" = "4"
+
+Sections of this code chunk is designed to set a null hypothesis for the BEC zubzone variants:
+"BAFAun" = "1", "ESSFmcp" = "1", "ESSFmvp" = "1", "ESSFwcp" = "1", "SWBmks" = "1"
+However, the above null is not needed, because all values are equal to 1 - so a model without BEC data is the null.
+
+An alternate priorizes (lower) BAFAun over others:
+"BAFAun" = "1", "ESSFmcp" = "2", "ESSFmvp" = "2", "ESSFwcp" = "2", "SWBmks" = "2"
+
+### Not executed
+## Rao's Q
+
+The rasterdiv packages is used to heterogeneity indices (e.g., Rao's Q) on the vegetation layer "as it better contrasts against the geological heterogeneity of the upper alpine belt" (Rocchini et al. 2021, p. 1098)
+
+## This would be an excellent part to include in the analysis. I ran this for four days and it was still ## on alpha = 1. This code chunk require a long-time to process or a faster super-computer.
+## Rao_EVI2 <- rasterdiv::paRao(raster(Vegetation),window=9,simplify=2,alpha=1:5,na.tolerance=0.5,dist_m="euclidean",np=6)
+
+
+Rocchini, D., Thouverai, E., Marcantonio, M., Iannacito, M., Da Re, D., Torresani, M., Bacaro, G., Bazzichetto, M., Bernardi, A., Foody, G.M., Furrer, R., Kleijn, D., Larsen, S., Lenoir, J., Malavasi, M., Marchetto, E., Messori, F., Montaghi, A., Moudrý, V., Naimi, B., Ricotta, C., Rossini, M., Santi, F., Santos, M.J., Schaepman, M.E., Schneider, F.D., Schuh, L., Silvestri, S., Ŝímová, P., Skidmore, A.K., Tattoni, C., Tordoni, E., Vicario, S., Zannini, P. & Wegmann, M. (2021). rasterdiv—An Information Theory tailored R package for measuring ecosystem heterogeneity from space: To the origin and back. Methods in Ecology and Evolution, 12, 1093–1102.
+
+
+```{r Factor_rast, echo=FALSE}
+
+Vegetation <- terra::rast(dir(here::here("Sentinel-2", "EVI2"), pattern="EVI2_2021_TKDN.tif", full.names = TRUE))
+Climate <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs" ), pattern="Climate_vars.tif", full.names = TRUE))
+Terrain <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs" ), pattern="Terrain_vars.tif", full.names = TRUE))
+BEC_habitat <- terra::rast(dir(here::here("BEC" ), pattern="BEC_habitat.tif$", full.names = TRUE))
+HR_hibernate <- terra::rast(dir(here::here("Habitat" ), pattern="Hibernate.tif", full.names = TRUE))
+HR_feeding <- terra::rast(dir(here::here("Habitat" ), pattern="Feeding.tif", full.names = TRUE))
+
+BEC_habitat2 <- terra::resample(BEC_habitat, Climate, method='near')
+HR_hibernate2 <- terra::resample(HR_hibernate, Climate, method='near')
+HR_feeding2 <- terra::resample(HR_feeding, Climate, method='near')
+
+## Mask the hibernating and feeding with BEC_habitat - it is unlikely that they exist outside the BEC_habitat according to this model.
+
+HR_hibernate2 <- mask(HR_hibernate2,BEC_habitat2)
+HR_feeding2 <- mask(HR_feeding2,BEC_habitat2)
+
+## BEC null (removed, because all =1) and alternative. The matrix from-to method is described in Terra package documentation
+## under "classify".
+#BEC_habitat_mat0 <- matrix(nrow = 5, ncol = 3)
+#BEC_habitat_mat0[1, ] <- c(0,1,1)
+#BEC_habitat_mat0[2, ] <- c(1,2,1)
+#BEC_habitat_mat0[3, ] <- c(2,3,1)
+#BEC_habitat_mat0[4, ] <- c(3,4,1)
+#BEC_habitat_mat0[5, ] <- c(4,5,1)
+
+BEC_habitat_mata <- matrix(nrow = 5, ncol = 3)
+BEC_habitat_mata[1, ] <- c(0,1,1)
+BEC_habitat_mata[2, ] <- c(1,2,2)
+BEC_habitat_mata[3, ] <- c(2,3,2)
+BEC_habitat_mata[4, ] <- c(3,4,2)
+BEC_habitat_mata[5, ] <- c(4,5,2)
+
+#Null - while a null raster can be created, it is simply a matter of calculating the pixels equal to 1. Hence, you can just take this out of the model as the null with the other rasters clipped to the perimeter of the the BEC zones in play.
+#BEC_habitat0 <- terra::classify(BEC_habitat2, BEC_habitat_mat0, include.lowest=TRUE)
+#Alternative
+BEC_habitata <- terra::classify(BEC_habitat2, BEC_habitat_mata, include.lowest=TRUE)
+
+## Save the processed rasters:
+#terra::writeRaster(BEC_habitat0, filename=file.path(paste0(here("HSDM_Marmot", "Inputs"),"/","BEC_habitat0.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+terra::writeRaster(BEC_habitata, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/","BEC_habitata.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+## Reload the processed rasters:
+#BEC_habitat0 <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="BEC_habitat0.tif$", full.names=TRUE))
+BEC_habitata <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="BEC_habitata.tif$", full.names=TRUE))
+
+## Categorical rasters can be created with SpatRaster. Note: "There are three different types of random effects in GAMMs...use 'fac' to indicate factor coding for the random effect, and x0 for a continuous fixed effect" http://r.qcbs.ca/workshop08/book-en/quick-intro-to-generalized-additive-mixed-models-gamms.html
+## See also ordered categorical variable: https://rdrr.io/cran/mgcv/man/ocat.html
+## See here for code example: https://m-clark.github.io/generalized-additive-models/appendix.html
+
+BECvar <- c("BAFAun","ESSFmcp","ESSFmvp","ESSFwcp","SWBmks")
+BECvarnum <- c(0:4)
+BECval <- as.data.frame(cbind(BECvarnum,BECvar))
+BECval[,1] <- as.integer(BECval[,1])
+BECval[,2] <- as.factor(BECval[,2])
+levels(BEC_habitat2) <- BECval
+activeCat(BEC_habitat2, layer=1)
+is.factor(BEC_habitat2)
+
+BECcolors <- brewer.pal(n = 5, name = "Spectral")
+plot(BEC_habitat2, col=BECcolors)
+
+HibhabRC <- c("Nil","High","Mod","Low") ## Hibernating habitat rating class
+Hibhabvarnum <- c(1:4)
+Hibhabval <- as.data.frame(cbind(Hibhabvarnum,HibhabRC))
+Hibhabval[,1] <- as.integer(Hibhabval[,1])
+Hibhabval[,2] <- as.factor(Hibhabval[,2])
+levels(HR_hibernate2) <- Hibhabval
+activeCat(HR_hibernate2, layer=1)
+is.factor(HR_hibernate2)
+
+Hibhabcolors <- brewer.pal(n = 4, name = "Spectral")
+plot(HR_hibernate2, col=Hibhabcolors)
+
+
+HibfeeRC <- c("Nil","High","Mod","Low") ## Hibernating feeding rating class
+Hibfeevarnum <- c(1:4)
+Hibfeeval <- as.data.frame(cbind(Hibfeevarnum,HibfeeRC))
+Hibfeeval[,1] <- as.integer(Hibfeeval[,1])
+Hibfeeval[,2] <- as.factor(Hibfeeval[,2])
+levels(HR_feeding2) <- Hibfeeval
+activeCat(HR_feeding2, layer=1)
+is.factor(HR_feeding2)
+
+Hibfeecolors <- brewer.pal(n = 4, name = "Spectral")
+plot(HR_feeding2, col=Hibfeecolors)
+
+BEC_habitat2 <- crop(BEC_habitat2,Vegetation)
+HR_hibernate2 <- crop(HR_hibernate2,Vegetation)
+HR_feeding2 <- crop(HR_feeding2,Vegetation)
+
+## Save the categorical rasters - see here for saving with names: https://github.com/rspatial/terra/issues/272
+terra::writeRaster(BEC_habitat2, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/",names(BEC_habitat2),"_BEC_habitat.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+terra::writeRaster(HR_hibernate2, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/",names(HR_hibernate2),"_HR_hibernate.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+terra::writeRaster(HR_feeding2, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/",names(HR_feeding2),"_HR_feeding.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+```
+
+## Setting the extent
+
+This code chunk reloads the rasters and re-processes all of them to ensure that they all share the same extent.
+
+```{r Factor_rast, echo=FALSE}
+Vegetation <- terra::rast(dir(here::here("Sentinel-2", "EVI2"), pattern="EVI2_2021_TKDN.tif", full.names = TRUE))
+Climate <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs" ), pattern="Climate_vars.tif", full.names = TRUE))
+Terrain <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs" ), pattern="Terrain_vars.tif", full.names = TRUE))
+BEC_habitat <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="BECvar_BEC_habitat.tif$", full.names=TRUE))
+HR_hibernate <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="HibhabRC_HR_hibernate.tif$", full.names=TRUE))
+HR_feeding <-terra:: rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="HibfeeRC_HR_feeding.tif$", full.names=TRUE))
+
+Climate_MSP <- terra::subset(Climate,1)
+Climate_DD_0 <- terra::subset(Climate,2)
+Climate_NFFD <- terra::subset(Climate,3)
+Climate_PAS <- terra::subset(Climate,4)
+habitat_aspect <- terra::subset(Terrain,1)
+habitat_slope <- terra::subset(Terrain,2)
+TKDN_Rough <- terra::subset(Terrain,3)
+
+Rasters_list <- list()
+## Crop to the territory
+TKD_Territory <- terra::vect(paste0(here::here("Spatial_Polygons"),"/TKD_Territory.shp"))
+
+Rasters_list[[1]] <- terra::crop(Climate_MSP,TKD_Territory.shp)
+Rasters_list[[2]] <- terra::crop(Climate_DD_0,TKD_Territory.shp)
+Rasters_list[[3]] <- terra::crop(Climate_NFFD,TKD_Territory.shp)
+Rasters_list[[4]] <- terra::crop(Climate_PAS,TKD_Territory.shp)
+Rasters_list[[5]] <- terra::crop(habitat_aspect,TKD_Territory.shp)
+Rasters_list[[6]] <- terra::crop(habitat_slope,TKD_Territory.shp)
+Rasters_list[[7]] <- terra::crop(TKDN_Rough,TKD_Territory.shp)
+Rasters_list[[8]] <- terra::crop(HR_hibernate,TKD_Territory.shp)
+Rasters_list[[9]] <- terra::crop(HR_feeding,TKD_Territory.shp)
+Rasters_list[[10]] <- terra::crop(Vegetation,TKD_Territory.shp)
+Rasters_list[[11]] <- terra::crop(BEC_habitat,TKD_Territory.shp)
+Rasters_list[[12]] <- terra::crop(BEC_habitata,TKD_Territory.shp)
+
+## Put all the rasters into the same extent.
+b <- sapply(Rasters_list, \(i) ext(i) |> as.vector())
+e <- ext(min(b[1,]), max(b[2,]), min(b[3,]), max(b[4,]))
+Marmot_rasters <- lapply(Rasters_list, extend, e)
+rasternames <- c("Climate_MSP","Climate_DD_0","Climate_NFFD","Climate_PAS","habitat_aspect","habitat_slope","TKDN_Rough","HR_hibernate","HR_feeding","Vegetation","BEC_habitat","BEC_habitata")
+
+for(i in 1:length(Marmot_rasters)){
+  names(Marmot_rasters[[i]]) <- rasternames[i]
+  terra::writeRaster(Marmot_rasters[[i]], paste0(here::here("HSDM_Marmot", "Inputs"),"/",rasternames[i],".tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+}
+
+```
+
+## Reduced resolution
+
+The 10 m rasters are high resolution and slow for the processing capabilities. To increase speed, this code reduces the resolution by a factor of 5 to 50 m.
+
+
+```{r Low_res}
+
+Climate_MSP  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^Climate_MSP.tif$", full.names = TRUE))
+Climate_DD_0  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^Climate_DD_0.tif$", full.names = TRUE))
+Climate_NFFD  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^Climate_NFFD.tif$", full.names = TRUE))
+Climate_PAS  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^Climate_PAS.tif$", full.names = TRUE))
+habitat_aspect  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^habitat_aspect.tif$", full.names = TRUE))
+habitat_slope  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^habitat_slope.tif$", full.names = TRUE))
+TKDN_Rough  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^TKDN_Rough.tif$", full.names = TRUE))
+HR_hibernate  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^HR_hibernate.tif$", full.names = TRUE))
+HR_feeding  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^HR_feeding.tif$", full.names = TRUE))
+Vegetation  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^Vegetation.tif$", full.names = TRUE))
+BEC_habitat  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^BEC_habitat.tif$", full.names = TRUE))
+BEC_habitata  <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="^BEC_habitata.tif$", full.names = TRUE))
+
+# When I loop this I get an odd error ("Error: [aggregate] cannot guess file type from
+## filename"), which might be a developer bug, so I do each separately.
+#for(i in 1:length(Marmot_rasters)){
+#  names(Marmot_rasters[[i]]) <- rasternames[i]
+#  aggregate(Marmot_rasters[[i]], fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", #"Inputs"),"/",rasternames[i],"_F5"), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE))
+#}
+
+Climate_MSP_F5 <- aggregate(Climate_MSP, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/Climate_MSP_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+Climate_DD_0_F5 <- aggregate(Climate_DD_0, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/Climate_DD_0_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+Climate_NFFD_F5 <- aggregate(Climate_NFFD, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/Climate_NFFD_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+Climate_PAS_F5 <- aggregate(Climate_PAS, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/Climate_PAS_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+habitat_aspect_F5 <- aggregate(habitat_aspect, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/habitat_aspect_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+habitat_slope_F5 <- aggregate(habitat_slope, fact=5, fun="mean", cores=4, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/habitat_slope_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+TKDN_Rough_F5 <- aggregate(TKDN_Rough, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/TKDN_Rough_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+HR_hibernate_F5 <- aggregate(HR_hibernate, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/HR_hibernate_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+HR_feeding_F5 <- aggregate(HR_feeding, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/HR_feeding_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+Vegetation_F5 <- aggregate(Vegetation, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/Vegetation_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+BEC_habitat_F5 <- aggregate(BEC_habitat, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/BEC_habitat_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+#BEC_habitat0_F5 <- aggregate(BEC_habitat0, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", #"Inputs"),"/BEC_habitat0_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+BEC_habitata_F5 <- aggregate(BEC_habitata, fact=5, fun="mean", cores=6, filename=file.path(paste0(here::here("HSDM_Marmot", "Inputs"),"/BEC_habitata_F5a.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+## Recall all the rasters
+rasternames <- c("Climate_MSP_F5","Climate_DD_0_F5","Climate_NFFD_F5","Climate_PAS_F5","habitat_aspect_F5","habitat_slope_F5","TKDN_Rough_F5","HR_hibernate_F5","HR_feeding_F5","Vegetation_F5","BEC_habitat_F5","BEC_habitat0_F5","BEC_habitata_F5")
+
+for(i in 1:length(rasternames)){
+  assign(rasternames[i],rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern=paste0("^",rasternames[i],"a.tif$"), full.names=TRUE)))
+}
+
+
+## NOT NEEDED
+Rasters_list <- list()
+Rasters_list[[1]] <- Climate_MSP_F5
+Rasters_list[[2]] <- Climate_DD_0_F5
+Rasters_list[[3]] <- Climate_NFFD_F5
+Rasters_list[[4]] <- Climate_PAS_F5
+Rasters_list[[5]] <- habitat_aspect_F5
+Rasters_list[[6]] <- habitat_slope_F5
+Rasters_list[[7]] <- TKDN_Rough_F5
+Rasters_list[[8]] <- HR_hibernate_F5
+Rasters_list[[9]] <- HR_feeding_F5
+Rasters_list[[10]] <- Vegetation_F5
+Rasters_list[[11]] <- BEC_habitat_F5
+#Rasters_list[[12]] <- BEC_habitat0_F5
+Rasters_list[[12]] <- BEC_habitata_F5
+
+###Marmot_rasters <- lapply(Rasters_list, resample, Vegetation_F5)
+
+for(i in 1:length(Marmot_rasters)){
+  names(Marmot_rasters[[i]]) <- rasternames[i]
+  terra::writeRaster(Marmot_rasters[[i]], paste0(here::here("HSDM_Marmot", "Inputs"),"/",rasternames[i],".tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+}
+
+
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

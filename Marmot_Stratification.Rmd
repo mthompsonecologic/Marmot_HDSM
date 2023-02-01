@@ -1,0 +1,73 @@
+---
+title: "Marmot_Stratification"
+author: "Mark Thompson"
+date: "2022-11-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading spsurvey package
+
+
+```{r cars}
+install.packages("spsurvey")
+install.packages("terra")
+install.packages("spData")
+install.packages("sf")
+
+library(spsurvey)
+library(terra)
+library(spData)
+library(sf)
+```
+
+## Statifying using GRTS
+
+An equal distribution of points plotted into a Generalized Random Tesselation Sampling (GRTS) design is stratified by the marmot habitat distribution model (HDM). The HDM was finalized in Marmot_Model.Rmd after review of multiple potential explanatory variables and interactions between them. There was one clear winner in the models compared using the Akaike Information Criterion method that included interactions with the hibernation factors and the remaining explanatory rasters. The knots used in the GAMs were as large as I could fit them and one of the k-index for xy coordinates was 0.77 where a value of 1 is more idea. However, increasing the knots above 300 would eat more computation time and this is unlikely to severely alter the model according to Gavin Simpson's online video tutorial on these.
+
+The stratification procedure and sampling plan that is developed here provides a starting plan that can be tweaked and updated to take other factors into consideration, such as helicopter lauch and refueling sites or budget. A total of 60 plots is set into the model prediction that was stratified into 3 equal probabilities: low, med, high. The plots provide an equal sample of 20 plots into each strata with 5 extra included in the reverse hierarchically ordered (rho) replacement sites (Dumelle et al. 2022. Package 'spsurvey', V. 5.4.0) that can be used as alternatives should access become an issue.
+
+
+```{r pressure, echo=FALSE}
+
+# Read in the shapefile of the prediction
+
+marmot_strat <- st_read(paste0(here::here("HSDM_Marmot","Outputs"),"/Marmot_Prediction.shp"))
+marmot_strat <- vect(marmot_strat)
+marmot_strat <- sf::st_as_sf(marmot_strat) #spsurvey requires sf input
+
+## Marmot presence points, or the legacy data as called in spsurvey
+  
+  Marmot.legacy <- read.csv(paste0(here::here("HSDM_Marmot", "Inputs"),"/","MarmotPoints.csv"), stringsAsFactors = FALSE)
+ 
+  Marmot.legacy_mat <- cbind(Marmot.legacy$e, Marmot.legacy$n)
+  row.names(Marmot.legacy_mat) <- 1:nrow(Marmot.legacy_mat)
+  
+  Z9CRS <- CRS("+proj=utm +zone=9 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+  Marmot.legacy_sp <- SpatialPoints(Marmot.legacy_mat, proj4string = Z9CRS)
+  Marmot.legacy_sf <- st_as_sf(Marmot.legacy_sp)
+
+# Create the design list
+  
+strata_n <- c(low = 20, med = 20, high = 20)
+strata_rho <- c(low = 5, med = 5, high = 5) #Replacement sites
+
+##Equaldsgn <- list(None=list(panel=c(PanelOne=16), seltype="Equal"))
+
+# Create the GRTS survey design
+##cat("\nThe following information is printed by \"grts\" while it is executing:\n")
+
+Equalsites <- grts(marmot_strat,n_base=strata_n,stratum_var = "rank",n_over=strata_rho)
+
+Marmot_SamplePlan <- sp_rbind(Equalsites)
+Marmot_SamplePlan <- vect(Marmot_SamplePlan)
+
+writeVector(Marmot_SamplePlan,paste0(here::here("HSDM_Marmot", "Outputs"),"/Marmot_SamplePlan"))
+
+
+```
+
+

@@ -1,0 +1,827 @@
+---
+title: "Marmot HSDM"
+author: "Mark Thompson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+h2{Hoary Marmot Sentinel-2 seasonal cloud mask and averaging: R Markdown code}
+
+##################################################################
+Hoary Marmot Habitat and Species Distribution Model:
+Prepared for: Chu Cho Environmental, Tsay Keh Dene, BC Ministry of Forests, Lands, Natural Resource Operations, and Rural Development.
+
+Prepared by: Mark Thompson (MSc, MEd, RPBio),
+EcoLogic Consultants Ltd.
+
+h3{Annotated RMarkdown for processing and training}
+
+
+```{r include = FALSE, results = "hide"}
+
+##################################################################
+
+if(!require(sp)){!install.packages("sp")}
+if(!require(sf)){!install.packages("sf")}
+if(!require(raster)){!install.packages("raster")}
+if(!require(terra)){!install.packages("terra")}
+if(!require(rgdal)){!install.packages("rgdal")} ## See notes here for retirement by the end of 2023:
+## https://r-spatial.org/r/2022/04/12/evolution.html?fbclid=IwAR1U15rnd1tFBc1Ns2LGgQ8w9tLfDR8yzkIa4TLGvoaVnDBBLQxNIxNM61U
+if(!require(here)){!install.packages("here")}
+if(!require(sen2r)){!install.packages("sen2r")}
+if(!require(gdalUtilities)){!install.packages("gdalUtilities")}
+
+## For sen2r package dependencies:
+install.packages(c("leaflet", "leafpm", "mapedit", "shiny", "shinyFiles", "shinydashboard", "shinyjs", "shinyWidgets"))
+
+library(sp)
+library(raster)
+library(terra)
+library(rgdal)
+library(sf)
+library(here)
+library(sen2r)
+
+library(leaflet)
+library(leafpm)
+library(mapedit)
+library(shiny)
+library(shinyFiles)
+library(shinydashboard)
+library(shinyjs)
+library(shinyWidgets)
+library(gdalUtilities)
+
+###################################################################
+
+#############################################################################
+## Spatial time settings
+x = "E" # Easting
+y = "N" # Northing
+## See depreciated: https://inbo.github.io/tutorials/tutorials/spatial_crs_coding/
+Datecolumn= "Date"
+Timecolumn= "Time"
+timezone = "GMT"
+#############################################################################
+
+
+```
+
+######################
+To obtain Sentinel-2 files:
+
+a. Download from: https://scihub.copernicus.eu/dhus/#/home, or
+b. Directly using sen2R() GUI.
+
+If files are retrieved from the 'sen2r()' GUI, then only the Bottom of Atmosphere SAFE products are needed. The masking and vegetation index calculations as offered in 'sen2r()' are granule specific. The purpose of this script is to perform these calculations across seasons.
+
+Remove the hash tag \# in front of sen2r() below to initiate the app.
+
+```{r include = FALSE, results = "hide"}
+#sen2r()
+
+#You can check later if the ordered images are online with the command:
+#   safe_is_online("C:/Users/Mark/DOCUME~1/SEN2R~1/lta_orders/lta_20220610_172947.json")
+# When additional images are online, you can relaunch the processing chain using the command:
+#   sen2r("C:/Users/Mark/DOCUME~1/SEN2R~1/proc_par/s2proc_20220610_172819.json")
+
+
+```
+
+Once obtained, the Sentinel-2 can be opened in the European Space Agency SNAP software for pre-processing or directly using the script below. There are reasons why SNAP may be preferable, because it is becoming a powerful analytical tool and saves the resampled data in an efficient way. The SCP plugin with QGIS is another option, but it is not ideal for processing more than 10 granules. The granules have to be re-sampled so that all bands and scene classifications are in the same resolution.
+
+Sentinel-2 will either be saved in *.SAFE format directly (e.g., using the sen2r() package) or in a zip folder, these folders are defined in the 
+safe.output
+here("Zip")
+
+This next code chunk will extract downloaded Sentinel-2 zip folders and place the extracted data into a directory using the ESA's *.SAFE format. It first checks if the zip files have been extracted.
+
+
+```{r include = FALSE, results = "hide"}
+
+## Specify the directory where the zip files are - if outside of the root directory here()
+
+
+S2zip_files <- dir(path = here("Sentinel-2", "Zip"), pattern = ".zip$", recursive = FALSE, ignore.case = TRUE)
+S2unzip_dirs <- dir(path = here("Sentinel-2", "SAFE"), full.names = FALSE, pattern = ".SAFE$")
+
+S2zip_files_c <- sub(pattern = ".zip$", "", S2zip_files)
+S2unzip_dirs_c <- sub(pattern = ".SAFE$", "", S2unzip_dirs)
+s2zips <- setdiff(S2zip_files_c,S2unzip_dirs_c)
+
+if(length(s2zips) > 0){
+  for(i in 1:length(s2zips)){
+    if(s2zips[i] > 0){
+      unzip(zipfile=paste0(here("Sentinel-2", "Zip"), "/" ,s2zips[i],".zip"), exdir = here("Sentinel-2", "SAFE"))
+    }
+  else{next}
+  }
+}
+
+```
+
+Call to rgdal to suppress creation of \*.aux - not currently working, but it is okay. The \*.aux files can be deleted or ignored afterward.
+
+Explanation:
+1. https://stackoverflow.com/questions/44123832/r-how-to-write-a-raster-to-disk-without-auxiliary-file
+2. http://pkg.cs.ovgu.de/LNF/i386/5.10/LNFgdal-docs/reloc/gdal/html/classGDALPamDataset.html
+
+The .SAFE format has the images saved in \*.jp2 format This is a function that converts from \*.jp2 to GeoTiff format.
+Explanation: https://stackoverflow.com/questions/66633464/downscaling-sentinel-2-bands-to-10m-using-r-language/72037370#72037370
+
+
+## The jp2 to GTiff Function - depreciated.
+The code was originally written with the 'raster' package, but I changed the code to use the package replacement 'terra' to prepare for the 2023 update and closure of that package. The new 'terra' package handles jp2 directly and writes as GeoTiff.
+
+```{r include = FALSE, results = "hide"}
+
+#rgdal::setCPLConfigOption("GDAL_PAM_ENABLED", "FALSE")
+
+jp2_to_GTiff <- function(jp2_path) {
+   #read ".jp2" and convert to raster
+  sen2_GDAL <- rast(readGDAL(jp2_path))
+  names(sen2_GDAL) <- as.character(regmatches(jp2_path,gregexpr("B0\\d", jp2_path)))
+  return(sen2_GDAL)
+  }
+```
+
+This code lists all the jp2 granules in the Sentinel-2 SAFE directory by pattern matching in the file naming convention. Once listed, the files are processed into GeoTiffs by calling the jp2 to GTiff Function above. The stacked rasters in GeoTiff format are resampled to a common 10 m resolution. Note the resolution as distributed:
+  ## B2:B4, B8    = 10 m -> s2_10m
+  ## B5:B7        = 20 m -> s2_20m
+  ## SCL          = 20 m -> s2_SCL
+  ## Cld (Cloud)  = 20 m -> s2_Cld
+  
+The 'if{}else{}' at the start of the loop checks if the raster is already processed and will move to the next if that is true.
+
+If you run into memory issues:
+
+'unlink(tempdir(), recursive=TRUE)' ## This deletes the temporary directory, but 
+  
+  
+  
+```{r include = FALSE, results = "hide"}
+
+####
+dirs <- list.dirs(here("Sentinel-2","SAFE"), recursive = FALSE)
+s2dirnames <- list.dirs(here("Sentinel-2","SAFE"), recursive = FALSE, full.names = FALSE)
+S2dirs <- dirs[ grepl(pattern = "S2(A|B)_MSIL2A", dirs)]
+
+## Temporary directories that have to be wiped in process:
+tname <- tempdir()
+tname <- gsub("\\\\", "/", tname)
+tname <- gsub("\\//", ":", tname)
+
+for(i in 1:length(S2dirs)){
+  
+  s2r_file <- dir(path=here("Sentinel-2", "Resampled"), pattern = paste0(substr(as.character(s2dirnames[i]),-65,44),"_","resampled.tif"))
+
+  if(length(s2r_file) == 0){
+    
+    S2_10m <- list.files(path = S2dirs[i], pattern = "B0\\d_10m.jp2$", recursive = TRUE, ignore.case = TRUE, full.names = TRUE)
+    S2_20m <- list.files(path = S2dirs[i], pattern = "B0[5|6|7]_20m.jp2$", recursive = TRUE, ignore.case = TRUE, full.names = TRUE)  
+    S2_SCL <- list.files(path = S2dirs[i], pattern = "SCL_20m.jp2$", recursive = TRUE, ignore.case = TRUE, full.names = TRUE)
+   S2_Cld <- list.files(path = S2dirs[i], pattern = "CLDPRB_20m.jp2$", recursive = TRUE, ignore.case = TRUE, full.names = TRUE)
+  
+  S2_10mb2 <- jp2_to_GTiff(S2_10m[1])
+  S2_10mb3 <- jp2_to_GTiff(S2_10m[2])
+  S2_10mb4 <- jp2_to_GTiff(S2_10m[3])
+  S2_10mb8 <- jp2_to_GTiff(S2_10m[4])
+  
+  S2_20mb5 <- jp2_to_GTiff(S2_20m[1])
+  S2_20mb6 <- jp2_to_GTiff(S2_20m[2])
+  S2_20mb7 <- jp2_to_GTiff(S2_20m[3])
+  S2_SCL <- jp2_to_GTiff(S2_SCL)
+  S2_Cld <- jp2_to_GTiff(S2_Cld)
+    
+  S2_10mb5 <- resample(S2_20mb5, S2_10mb2, method='bilinear')
+  S2_10mb6 <- resample(S2_20mb6, S2_10mb2, method='bilinear')
+  S2_10mb7 <- resample(S2_20mb7, S2_10mb2, method='bilinear')
+  S2_SCLr <- resample(S2_SCL, S2_10mb2, method='near') # method is near, because it is categorical
+  S2_Cldr <- resample(S2_Cld, S2_10mb2, method='near')
+  
+  S2_resample <- rast()
+  S2_resample <- c(S2_10mb2, S2_10mb3, S2_10mb4, S2_10mb5, S2_10mb6, S2_10mb7, S2_10mb8, S2_SCLr, S2_Cldr)
+
+  terra::writeRaster(S2_resample, filename=file.path(paste0(here("Sentinel-2","Resampled"),"/",substr(as.character(s2dirnames[i]),-65,44),"_",'resampled.tif')), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+  
+  ## This wipes and re-creates the temporary directory each run, to save on memory space
+  unlink(tempdir(), recursive=TRUE)
+  dir.create(tname)
+  }
+  else{next}
+}
+
+## Working with Sentinel-2 images that have been unzipped and processed
+## either in SNAP or using code above from ZIP files unpacked
+## They need to be in the same resolution and import of only the necessary bands.
+```
+h1{Sentinel-2: Tile Number Field}
+
+The Sentinel-2 naming convention has the following format:
+
+## MMM_ASIXXX_YYYYMMDDHHMMSS_Nxxyy_ROOO_Txxxxx_<Product Discriminator>.SAFE
+The first date (YYYYMMDDHHMMSS) is the datatake sensing time. The second date is the "<Product Discriminator>" field [...] and is used to distinguish between different end user products from the same datatake.
+
+See: https://sentinels.copernicus.eu/web/sentinel/user-guides/sentinel-2-msi/naming-convention
+
+For our purposes, Txxxxx is where we want to loop in:
+## Txxxxx: Tile Number field (TNF)
+
+This section code will search through a folder or sub-directory to locate Sentinel-2 products that share a Tile Number field. These are the sets of interest, and usually consist of the 3 best (least snow-cover) tiles that cover a  season (e.g., growing season for vegetation, winter for snow cover). Once a set is found, they will be co-processed into alpha and omega sets. The alpha will have negated clouds only. The omega sets will only have data in the negated cloud areas of the alpha. The order will proceed from date - earliest = alpha, next = omega1, next = omega2...etc.
+
+Note - the product exported from SNAP and must have the following standard naming structure at the end of the file name to work:
+## Txxxxx_resampled.tif <- where x's are wildcards
+
+The first 2 x's are actually numbers followed by 3 letters. The file also has to be saved with the correct band sequence, described further below.
+
+Search for the Tile Number Field in the directory
+If you need help understanding this part, see here:
+https://www.r-bloggers.com/2019/05/demystifying-regular-expressions-in-r/
+
+Briefly: \\d is any number \\D is any letter and in this case ('gregexpr("T\\d\\d\\D\\D\\D_resampled.tif", S2_files)'), the first "T" is T:
+
+```{r TN_Field, include = FALSE, results = "hide"}
+
+S2_files <- list.files(path = here("Sentinel-2","Resampled"), pattern = ".TIF$", recursive = FALSE, ignore.case = TRUE)
+
+
+TN_Field <- regmatches(S2_files,gregexpr("T\\d{2}\\D{3}_resampled.tif", S2_files))
+TN_Field <- unlist(Filter(length, TN_Field)) ## Filters anything with length >0
+TN_Field <- as.data.frame(unique(TN_Field)) ## Get the unique values
+```
+
+The following loop searches through the TN_Field vector (from above) to search and match the TN_Field in the S2_files listing the "Resampled" directory. Note that value=TRUE means that the asignment will provide the value of the matched elements in the S2_files list (i.e., the name of the Sentinel-2 image). The second line within the loop (i.e., feeding into set_list[i]) locates dates in the file names using Perl-compatible regexps. It assigns the files that share TNFs into a dataframes that is ordered by date of acquisition.
+
+```{r}
+set_list <- list()
+
+for(i in 1:nrow(TN_Field)){
+  assign("temp_set", grep(TN_Field[i,], S2_files,value=TRUE))
+  set_list[i] <- as.data.frame(temp_set, temp_set[order(as.Date(regmatches(temp_set,regexpr("(?<=_)[0-9]{8}",temp_set,perl=T)), format="%Y%m%d"))])
+  names(set_list)[i] = gsub("_resampled.tif", "", as.character(TN_Field[i,]))
+  }
+
+print(set_list[2]) ## An example to show what this looks like.
+
+```
+
+This loop extracts the date from the file name and adds it as a column in the list of TFNs
+
+First, the date  in the TFN has a unique sequence of 8 numbers. The universal identifier "\\d" for number is used to locate the date out of the TFN's in the loop that follows:
+
+```{r}
+
+nset_list <- list() ## Create an empty list for the loop below.
+
+for (i in 1:length(set_list)){
+  for (b in 1:length(set_list[[i]])){
+      Sent_date <- as.data.frame(regmatches(set_list[[i]],gregexpr("\\d{8}", set_list[[i]])), col.names = c(1:length(set_list[[i]])))
+      Sent_date <- as.data.frame(as.Date(gsub("(\\d{4})(\\d{2})(\\d{2})$","\\1-\\2-\\3",Sent_date)))
+      names(Sent_date) <- "Date"
+      assign("tempdf",as.data.frame(cbind(set_list[i],Sent_date)))
+      tempdf <- tempdf[order(tempdf[,2]),]
+      nset_list[[i]] <- tempdf
+  }
+}
+```
+
+
+{#### BIG LOOP
+This is what I call the BIG LOOP that goes through the set of sentinel-2 files in the list and searches
+or organizes by TFN. It create masks by year for each TFN group.
+
+Sentinel-2 Bands
+  ## Resolution, description, and central wavelength:
+  ## B1  B2  B3  B4  B5  B6  B7  B8  B8a  B9  B10  B11  B12
+  ## 60m 10m 10m 10m 20m 20m 20m 10m 20m  60m 60m  20m  20m
+  ## B1:  Ultra blue, 443 nm
+  ## B2:  Blue, 490 nm
+  ## B3:  Green, 560 nm
+  ## B4:  Red, 665 nm
+  ## B5:  Visible and Near Infrared, 705 nm
+  ## B6:  Visible and Near Infrared, 740 nm
+  ## B7:  Visible and Near Infrared, 783 nm
+  ## B8:  Visible and Near Infrared, 842 nm
+  ## B8a: Visible and Near Infrared, 865 nm
+  ## B9:  Short Wave Infrared, 940 nm
+  ## B10: Short Wave Infrared, 1375 nm
+  ## B11: Short Wave Infrared, 1610 nm
+  ## B12: Short Wave Infrared, 2190 nm
+                
+Do not get confused about the call to a "band", because in the case below, "band = 8" and "band = 9" are not "Short Wave Infrared", but are importing the quality and scene data. The following Sentinel-2 bands are in the resampled directory:
+
+  ## 1. S2_10mb2, 2. S2_10mb3, 3. S2_10mb4, 4. S2_10mb5, 5. S2_10mb6, 6. S2_10mb7, 7. S2_10mb8,
+  ## 8. S2_SCLr, 9. S2_Cldr
+  
+Quality Snow is ignored for now as the goal here is to get data on vegetation.
+
+
+  ## The alpha will be the first in the x subset (first of season)
+  ## all omegas are what exists after the alpha (later of season):
+  
+The nset_list was built in the code chunk above, which contains dataframes identifying each Sentinel-2 TFN set that spans across the study years 2020-2021. The dataframes have 2 columns - 1st column has the file names of the shared TFNs and the second is the date.
+
+```{r}
+
+## Temporary granules organized by TFN, including:
+## senrast_TFN: @ptr$names = "B02" "B03" "B04" "B05" "B06" "B07" "B08",
+##
+## are masked by:
+## senclass_TFN: @ptr$names = SCL_TNF
+## sencloud_TFN: @ptr$names = Cld_TFN
+##
+## Once processed, the masked granules within a given year are averaged.
+
+TFN_B02 <- list()
+TFN_B03 <- list()
+TFN_B04 <- list()
+TFN_B05 <- list()
+TFN_B06 <- list()
+TFN_B07 <- list()
+TFN_B08 <- list()
+
+for (i in 1:length(set_list)){
+  
+         assign("tmpset",as.data.frame(nset_list[[i]])) ## tmpset is assigned the TFNs all years
+            
+      ## Sub-loop (1):
+      ## divides the TFN dataframes into a single year,
+      ## calculated by how many years are in the TFN dataframe:
+
+        Set_Yrs <- unique(format(as.Date(tmpset[,2], format="%d/%m/%Y"),"%Y"))
+
+        for (y in 1:length(Set_Yrs)){
+
+            tmpset2 <- subset(tmpset,format(as.Date(tmpset[,2], format="%d/%m/%Y"),"%Y") == Set_Yrs[y])
+mean_file <- dir(path=here("Sentinel-2", "Mean"), pattern = paste0(names(tmpset2[1]),"_",Set_Yrs[y], "_mean.tif"))
+
+          if(length(mean_file) == 0){            
+            ## Sub-loop (2):
+            ## loads the Sentinel-2 rasters that were stored in the
+            ## resample folder from previous processing in code
+            ## chunks above. The loop goes through the rows of TFN
+            ## file names, ordered by date, and uses the terra package
+            ## to import the image.
+
+              for(b in 1:nrow(tmpset2)){
+                
+                senrast <- rast(paste0(here("Sentinel-2", "Resampled"),"/",tmpset2[b,1]))
+                ## to see: senrast_list[[b]]@ptr$names[8] or plot( senrast_list[[b]][8])
+
+## Remove the following from the Sentinel-2 SCL:
+                
+## 1: Saturated defective, ## 2: Dark feature shadow, ## 3: Cloud shadow, ## 5: Not vegetated,
+## 6: Water ## 7: Unclassified, ## 8: Cloud medium probability, ## 9: Cloud high probability,
+## 10: Thin cirrus  ## 11: Snow ice
+                
+## Remaining:
+    ## 4: Vegetation
+ 
+  ## It is important to know that the classifier for senclass identifies
+  ## some things as "not vegetated = 5" that is actually smoke from fire.
+  ## These details were observed during visual inspection in the SNAP tool.
+  ## The SCL quality cloud confidence layer identifies both clouds and smoke,
+  ## which was removed (set to zero) above. This is important if we are
+  ## doing other types of analysis that might involve "not vegetated".
+  assign("tempclass", senrast[[8]])
+  tempclass <- subst(tempclass, c(1:3,5:11), 0)
+  tempclass <- subst(tempclass, 4, 1)
+
+  ## This script sets the cloud layer negative - all clouds will have a value of 1.
+  ## The zero clouds (i.e., no clouded pixels) are temporarily
+  ## and arbitrarily set to -999 so that it can be reserved to set
+  ## the clouds to 1 after everything else is set to NA.
+  ## Processing is very slow in this part.
+  
+  assign("tempcloud", senrast[[9]])
+  tempcloud[tempcloud == 0] <- -999
+  tempcloud[tempcloud > 0] <- NA
+  tempcloud[tempcloud == -999] <-  1
+  
+## MASKING OUT THE CLOUDS
+
+  ## Pasted from ?mask: "Create a new Raster* object that has the same values as x,
+  ## except for the cells that are NA (or other maskvalue) in a 'mask'.
+  ## These cells become NA (or other updatevalue)."
+  ## Where, mask(x, mask). In our situation, sencloud (the mask) has clouds set to 1
+  ## and everything else set to NA. This means that the vegetation in the classified
+  ## senclass will be set to NA where clouds exist in the sencloud mask.
+                  
+  senTFN_mask <- mask(tempclass, mask = tempcloud)
+  #plot(senTFN_mask) ## the plotted change is slight in some cases, but it is there.
+  senTFN_mask[senTFN_mask < 1] <- NA
+  #plot(senTFN_mask)
+
+    ## The classification of good pixels is now masked against all the
+    ## bands in senrast (=B2, B3, B4, B5, B6, B7, B8):
+  assign("senrast_masked", mask(senrast[[c(1:7)]], mask = senTFN_mask))
+
+## Quote from terra package: "with mean(x, y) the parallel mean is returned – that is, the
+## computation is done layer-wise, and the number of layers in the output is the same as
+## that of x and y (or the larger of the two if they are not the same)." However, the individual
+## band layers are used to calculate the means
+
+  if(b==1){
+  TFN_B02 <- senrast_masked[[1]]
+  TFN_B03 <- senrast_masked[[2]]
+  TFN_B04 <- senrast_masked[[3]]
+  TFN_B05 <- senrast_masked[[4]]
+  TFN_B06 <- senrast_masked[[5]]
+  TFN_B07 <- senrast_masked[[6]]
+  TFN_B08 <- senrast_masked[[7]]
+  }else{
+  TFN_B02 <- (c(TFN_B02,senrast_masked[[1]]))
+  TFN_B03 <- (c(TFN_B03,senrast_masked[[2]]))
+  TFN_B04 <- (c(TFN_B04,senrast_masked[[3]]))
+  TFN_B05 <- (c(TFN_B05,senrast_masked[[4]]))
+  TFN_B06 <- (c(TFN_B06,senrast_masked[[5]]))
+  TFN_B07 <- (c(TFN_B07,senrast_masked[[6]]))
+  TFN_B08 <- (c(TFN_B08,senrast_masked[[7]]))
+  }
+
+    } ## End of b loop.
+  
+  TFN_B02_mean <- mean(TFN_B02,na.rm=TRUE)
+  names(TFN_B02_mean) <- "B02"
+  TFN_B03_mean <- mean(TFN_B03,na.rm=TRUE)
+  names(TFN_B03_mean) <- "B03"
+  TFN_B04_mean <- mean(TFN_B04,na.rm=TRUE)
+  names(TFN_B04_mean) <- "B04"
+  TFN_B05_mean <- mean(TFN_B05,na.rm=TRUE)
+  names(TFN_B05_mean) <- "B05"
+  TFN_B06_mean <- mean(TFN_B06,na.rm=TRUE)
+  names(TFN_B06_mean) <- "B06"
+  TFN_B07_mean <- mean(TFN_B07,na.rm=TRUE)
+  names(TFN_B07_mean) <- "B07"
+  TFN_B08_mean <- mean(TFN_B08,na.rm=TRUE)
+  names(TFN_B08_mean) <- "B08"
+
+   terra::writeRaster(assign(paste0(names(tmpset2[1]),"_",Set_Yrs[y]),
+   c(TFN_B02_mean, TFN_B03_mean, TFN_B04_mean, TFN_B05_mean, TFN_B06_mean, TFN_B07_mean, TFN_B08_mean)), filename=file.path(paste0(here("Sentinel-2","Mean"),"/",paste0(names(tmpset2[1]),"_",Set_Yrs[y], "_mean.tif"))), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+
+    unlink(tempdir(), recursive=TRUE) ## Clear the temporary directory to save memory
+    dir.create(tname)
+      }else{next} 
+
+} ## End of y loop (Years).
+        
+}
+
+   
+```
+
+ ## Calculate the EVI
+  ## The formula is published.
+  ## https://www.indexdatabase.de/info/credits.php
+  ##
+  ## Huete, A. R., Liu, H. Q., Batchily, K., & van Leeuwen, W. (1997).
+  ## A comparison of vegetation indices over a global set of TM images for
+  ## EOS-MODIS. Remote Sensing of Environment, 59(3), 440–451.
+  ## https://www.indexdatabase.de/db/si-single.php?sensor_id=96&rsindex_id=16
+  ## https://github.com/ranghetti/sen2r/blob/7ac3fd16608caf3830e7e483ff96e1c7537116d0/inst/extdata/settings/indices.json
+  
+  ## Checking the range of possible values by manual entry of the maxValue of the raster:
+  ## EVI_Max = 2.5 * ((maxValue(B8) - maxValue(B4)) / ((minValue(B8) + (6*minValue(B4)) - (7.5*minValue(B2))) + 1))
+  ## EVI_Max = 2.5 * ((minValue(B8) - minValue(B4)) / ((maxValue(B8) + (6*maxValue(B4)) - (7.5*maxValue(B2))) + 1))
+
+
+```{r}
+
+Sen_mean_dir <- dir(here("Sentinel-2","Mean"))
+
+for(i in 1:length(Sen_mean_dir)){
+
+EVI2_file <- dir(path=here("Sentinel-2", "EVI2"), pattern = paste0(substr(Sen_mean_dir[i],1,11), "_EVI2.tif$"))
+
+  if(length(EVI2_file) == 0){   
+            
+  assign("meanr", rast(paste0(here("Sentinel-2", "Mean"),"/",Sen_mean_dir[i])))
+  B8 <- meanr[[7]]/10000
+  B4 <- meanr[[3]]/10000
+  #B2 <- meanr[[1]]/10000
+ 
+  #EVI <- 2.5*(B8-B4)/((B8+6*B4-7.5*B2)+1)
+  #names(EVI) <- paste0(substr(Sen_mean_dir[i],1,11), "_EVI")
+  
+  EVI2 <- 2.5*(B8-B4)/(B8+2.4*B4+1)
+  names(EVI2) <- paste0(substr(Sen_mean_dir[i],1,11), "_EVI2")
+  
+  terra::writeRaster(EVI2, filename=file.path(paste0(here("Sentinel-2","EVI2"),"/",paste0(substr(Sen_mean_dir[i], 1,11),"_EVI.tif"))), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+          }
+
+NDVI_file <- dir(path=here("Sentinel-2", "NDVI"), pattern = paste0(substr(Sen_mean_dir[i],1,11), "_NDVI.tif"))
+
+          if(length(NDVI_file) == 0){   
+            
+  assign("meanr", rast(paste0(here("Sentinel-2", "Mean"),"/",Sen_mean_dir[i])))
+  B8 <- meanr[[7]]/10000
+  B4 <- meanr[[3]]/10000
+
+  NDVI <- (B8 - B4) / (B8 + B4)
+  names(NDVI) <- paste0(substr(Sen_mean_dir[i],1,11), "_NDVI")
+
+  terra::writeRaster(NDVI, filename=file.path(paste0(here("Sentinel-2","NDVI"),"/",paste0(substr(Sen_mean_dir[i], 1,11),"_NDVI.tif"))), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+}else{next}
+}
+
+```
+
+This chunk provides the final merging of all the vegetation indices into a single annual product, which is then cropped to the study area and saved accordingly.
+
+```{r}
+
+TKD_Territory.shp <- vect(paste0(here::here("Spatial_Polygons"),"/TKD_Territory.shp"))
+
+terra::crs(TKD_Territory.shp) <- "epsg:32609"
+TKD_Territory.shp = terra::project(TKD_Territory.shp,  "epsg:32609")
+
+EVI2s <- dir(here("Sentinel-2","EVI2"))
+
+EVI2s_2020 <- dir(path=here("Sentinel-2", "EVI2"), pattern = "2020")
+EVI2s_2021 <- dir(path=here("Sentinel-2", "EVI2"), pattern = "2021")
+
+## EVI2 2020
+E2020.list <- list()
+
+E2020e.list <- list()
+E2020w.list <- list()
+
+crss_r <- data.frame()
+
+EVI2_file2020 <- dir(path=here("Sentinel-2", "EVI2"), pattern = "EVI2_2020_TKDN.tif")
+
+if(length(EVI2_file2020) == 0){   
+
+  for(i in 1:length(EVI2s_2020)){
+   E2020.list[[i]] <- rast(paste0(here("Sentinel-2", "EVI2"), "/", EVI2s_2020[i]))
+   crss_r <- rbind(crss_r, as.numeric(crs(E2020.list[[i]], describe=TRUE)$code))
+  }
+
+## Counters
+  e = 1 # East counter
+  w = 1 # West counter
+
+  y = 1 # First in East
+  z = 1 # First in West
+
+  for(i in 1:length(EVI2s_2020)){
+    
+    if(crs(E2020.list[[i]], describe=TRUE)$code == 32609 & y == 1){
+      e = 1
+      E2020e.list[[e]] <- E2020.list[[i]]
+      y <- y+1
+    }
+    
+    else if(crs(E2020.list[[i]], describe=TRUE)$code == 32610 & z == 1){
+      w = 1
+      E2020w.list[[w]] <- E2020.list[[i]]
+      z <- z+1
+    }
+    
+    else if(crs(E2020.list[[i]], describe=TRUE)$code == 32609 & y != 1){
+      e <- e+1
+      E2020e.list[[e]] <- E2020.list[[i]]
+    }
+
+    else if(crs(E2020.list[[i]], describe=TRUE)$code == 32610 & z != 1){
+      w <- w+1
+      E2020w.list[[w]] <- E2020.list[[i]]
+    }
+  
+    else{next}
+  }
+
+  ##E2020e <- sprc(E2020e.list) ## create a SpatRasterCollection east?
+  ##E2020w <- sprc(E20202.list) ## create a SpatRasterCollection west? 
+        
+  E2020_eastext <- do.call(terra::mosaic, E2020e.list) ## mosaic averages, merge is first
+  W2020_westext <- do.call(terra::mosaic, E2020w.list) ## 
+  
+  W2020_westext <- terra::project(W2020_westext, E2020_eastext, align = TRUE)
+  
+  EVI2_2020 <- merge(E2020_eastext, W2020_westext)
+  EVI2_2020 <- crop(EVI2_2020, TKD_Territory.shp, mask=TRUE)
+  
+  terra::writeRaster(EVI2_2020, filename=file.path(paste0(here("Sentinel-2","EVI2"),"/","EVI2_2020_TKDN.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+}
+
+## EVI2 2021
+E2021.list <- list()
+
+E2021e.list <- list()
+E2021w.list <- list()
+
+crss_r <- data.frame()
+
+EVI2_file2021 <- dir(path=here("Sentinel-2", "EVI2"), pattern = "EVI2_2021_TKDN.tif")
+
+if(length(EVI2_file2021) == 0){   
+
+  for(i in 1:length(EVI2s_2021)){
+   E2021.list[[i]] <- rast(paste0(here("Sentinel-2", "EVI2"), "/", EVI2s_2021[i]))
+   crss_r <- rbind(crss_r, as.numeric(crs(E2021.list[[i]], describe=TRUE)$code))
+  }
+
+## Counters
+  e = 1 # East counter
+  w = 1 # West counter
+
+  y = 1 # First in East
+  z = 1 # First in West
+
+  for(i in 1:length(EVI2s_2021)){
+    
+    if(crs(E2021.list[[i]], describe=TRUE)$code == min(crss_r) & y == 1){
+      e = 1
+      E2021e.list[[e]] <- E2021.list[[i]]
+      y <- y+1
+    }
+    
+    else if(crs(E2021.list[[i]], describe=TRUE)$code == max(crss_r) & z == 1){
+      w = 1
+      E2021w.list[[w]] <- E2021.list[[i]]
+      z <- z+1
+    }
+    
+    else if(crs(E2021.list[[i]], describe=TRUE)$code == min(crss_r) & y != 1){
+      e <- e+1
+      E2021e.list[[e]] <- E2021.list[[i]]
+    }
+
+    else if(crs(E2021.list[[i]], describe=TRUE)$code == max(crss_r) & z != 1){
+      w <- w+1
+      E2021w.list[[w]] <- E2021.list[[i]]
+    }
+  
+    else{next}
+  }
+
+  E2021_eastext <- do.call(terra::mosaic, E2021e.list)
+  W2021_westext <- do.call(terra::mosaic, E2021w.list)
+  
+  W2021_westext <- terra::project(W2021_westext, E2021_eastext, align = TRUE)
+
+  EVI2_2021 <- mosaic(E2021_eastext, W2021_westext)
+  EVI2_2021 <- crop(EVI2_2021, TKD_Territory.shp, mask=TRUE)
+  
+  terra::writeRaster(EVI2_2021, filename=file.path(paste0(here("Sentinel-2","EVI2"),"/","EVI2_2021_TKDN.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+  terra::writeRaster(EVI2_2021, filename=file.path(paste0(here("HSDM_Marmot", "Inputs"),"/","Vegetation.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE) ## Create a renamed copy for the model inputs
+
+}
+
+## NDVI
+
+NDVIs <- dir(here("Sentinel-2","NDVI"))
+
+NDVIs_2020 <- dir(path=here("Sentinel-2", "NDVI"), pattern = "2020")
+NDVIs_2021 <- dir(path=here("Sentinel-2", "NDVI"), pattern = "2021")
+
+## NDVI 2020
+
+N2020.list <- list()
+
+N2020e.list <- list()
+N2020w.list <- list()
+
+crss_r <- data.frame()
+
+NDVI_filN2020 <- dir(path=here("Sentinel-2", "NDVI"), pattern = "NDVI_2020_TKDN.tif")
+
+if(length(NDVI_filN2020) == 0){   
+
+  for(i in 1:length(NDVIs_2020)){
+   N2020.list[[i]] <- rast(paste0(here("Sentinel-2", "NDVI"), "/", NDVIs_2020[i]))
+   crss_r <- rbind(crss_r, as.numeric(crs(N2020.list[[i]], describe=TRUE)$code))
+  }
+
+## Counters
+  e = 1 # East counter
+  w = 1 # West counter
+
+  y = 1 # First in East
+  z = 1 # First in West
+
+  for(i in 1:length(NDVIs_2020)){
+    
+    if(crs(N2020.list[[i]], describe=TRUE)$code == min(crss_r) & y == 1){
+      e = 1
+      N2020e.list[[e]] <- N2020.list[[i]]
+      y <- y+1
+    }
+    
+    else if(crs(N2020.list[[i]], describe=TRUE)$code == max(crss_r) & z == 1){
+      w = 1
+      N2020w.list[[w]] <- N2020.list[[i]]
+      z <- z+1
+    }
+    
+    else if(crs(N2020.list[[i]], describe=TRUE)$code == min(crss_r) & y != 1){
+      e <- e+1
+      N2020e.list[[e]] <- N2020.list[[i]]
+    }
+
+    else if(crs(N2020.list[[i]], describe=TRUE)$code == max(crss_r) & z != 1){
+      w <- w+1
+      N2020w.list[[w]] <- N2020.list[[i]]
+    }
+  
+    else{next}
+  }
+
+  ##N2020e <- sprc(N2020e.list) ## create a SpatRasterCollection east?
+  ##N2020w <- sprc(N20202.list) ## create a SpatRasterCollection west? 
+        
+  N2020_eastext <- do.call(terra::mosaic, N2020e.list)
+  W2020_westext <- do.call(terra::mosaic, N2020w.list)
+  
+  W2020_westext <- terra::project(W2020_westext, E2020_eastext, align = TRUE)
+
+  NDVI_2020 <- mosaic(N2020_eastext, W2020_westext)
+  NDVI_2020 <- crop(NDVI_2020, TKD_Territory.shp, mask=TRUE)
+  
+  terra::writeRaster(NDVI_2020, filename=file.path(paste0(here("Sentinel-2","NDVI"),"/","NDVI_2020_TKDN.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+}
+  
+## NDVI 2021
+
+N2021.list <- list()
+
+N2021e.list <- list()
+N2021w.list <- list()
+
+crss_r <- data.frame()
+
+NDVI_filN2021 <- dir(path=here("Sentinel-2", "NDVI"), pattern = "NDVI_2021_TKDN.tif")
+
+if(length(NDVI_filN2021) == 0){   
+
+  for(i in 1:length(NDVIs_2021)){
+   N2021.list[[i]] <- rast(paste0(here("Sentinel-2", "NDVI"), "/", NDVIs_2021[i]))
+   crss_r <- rbind(crss_r, as.numeric(crs(N2021.list[[i]], describe=TRUE)$code))
+  }
+
+## Counters
+  e = 1 # East counter
+  w = 1 # West counter
+
+  y = 1 # First in East
+  z = 1 # First in West
+
+  for(i in 1:length(NDVIs_2021)){
+    
+    if(crs(N2021.list[[i]], describe=TRUE)$code == min(crss_r) & y == 1){
+      e = 1
+      N2021e.list[[e]] <- N2021.list[[i]]
+      y <- y+1
+    }
+    
+    else if(crs(N2021.list[[i]], describe=TRUE)$code == max(crss_r) & z == 1){
+      w = 1
+      N2021w.list[[w]] <- N2021.list[[i]]
+      z <- z+1
+    }
+    
+    else if(crs(N2021.list[[i]], describe=TRUE)$code == min(crss_r) & y != 1){
+      e <- e+1
+      N2021e.list[[e]] <- N2021.list[[i]]
+    }
+
+    else if(crs(N2021.list[[i]], describe=TRUE)$code == max(crss_r) & z != 1){
+      w <- w+1
+      N2021w.list[[w]] <- N2021.list[[i]]
+    }
+  
+    else{next}
+  }
+
+  N2021_eastext <- do.call(terra::mosaic, N2021e.list)
+  W2021_westext <- do.call(terra::mosaic, N2021w.list)
+
+  W2021_westext <- terra::project(W2021_westext, E2021_eastext, align = TRUE)
+  
+  NDVI_2021 <- mosaic(N2021_eastext, W2021_westext)
+  NDVI_2021 <- crop(NDVI_2021, TKD_Territory.shp, mask=TRUE)
+
+  terra::writeRaster(NDVI_2021, filename=file.path(paste0(here("Sentinel-2","NDVI"),"/","NDVI_2021_TKDN.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+}
+
+```
+
+The NA areas of the vegetation rasters that are in TKDN territory will be given a value, but it will be low. 
+
+For example, the values of the EVI2 raster is set to -0.50, because EVI2 goes from 1.131157 to -0.5075758. A setting of -0.50 will establish the lowest possibility of photosynthetic activity in these pixels.
+
+
+```{r}
+
+## Create a homogenous raster of TKD territory. 
+Vegetation2[is.na(Vegetation)] <- -0.5
+Vegetation2 <- crop(Vegetation2,TKD_Territory.shp, mask=TRUE)
+plot(Vegetation2)
+
+```
+

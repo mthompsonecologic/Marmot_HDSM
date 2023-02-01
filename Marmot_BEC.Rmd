@@ -1,0 +1,99 @@
+---
+title: "Marmot_BEC"
+author: "MThompson"
+date: '2022-07-14'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Packages
+
+```{r }
+if(!require(terra)){!install.packages("terra")}
+if(!require(here)){!install.packages("here")}
+if(!require(stars)){!install.packages("stars")}
+
+library(terra)
+library(here)
+library(stars)
+
+```
+
+Loading the BEC sets and masking to the exclusive set
+
+
+```{r}
+
+Vegetation <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern="Vegetation.tif", full.names = TRUE))  ## To standardize the scale
+
+BEC_poly <- st_read(paste0(here::here("BEC","BEC_BIOGEOCLIMATIC_POLY"),"/BEC_POLY_polygon.shp"))
+##OR
+##BEC_poly <- vect(paste0(dir(here::here("BEC","BEC_BIOGEOCLIMATIC_POLY"), pattern = "BEC_POLY_polygon.shp", full.names = TRUE)))
+TKD_Territory <- st_read(paste0(here::here("Spatial_Polygons"),"/TKD_Territory.shp"))
+TKD_Territory <- st_transform(TKD_Territory, "EPSG:3005")
+
+BEC_poly <- st_crop(BEC_poly,TKD_Territory)
+
+TKD_Territory <- terra::vect(TKD_Territory)
+BEC_poly <-  terra::vect(BEC_poly)
+BEC_habitat = terra::subset(BEC_poly, BEC_poly$MAP_LABEL=="BAFAun" | BEC_poly$MAP_LABEL=="ESSFmcp" | BEC_poly$MAP_LABEL=="ESSFmvp" | BEC_poly$MAP_LABEL=="ESSFwcp" | BEC_poly$MAP_LABEL== "SWBmks")
+BEC_habitat <- terra::crop(BEC_habitat,TKD_Territory)
+BEC_habitat <- terra::project(BEC_habitat, "epsg:32609")
+BEC_habitat_sf <- sf::st_as_sf(BEC_habitat[,7])
+
+
+ggplot(BEC_habitat_sf) + geom_sf() + geom_sf_text(aes(label = MAP_LABEL))
+plot(BEC_habitat_sf["MAP_LABEL"], main="BEC Site Units")
+writeVector(vect(BEC_habitat_sf),paste0(here::here("HSDM_Marmot", "Outputs"),"/Marmot_BEC_habitat.shp"))
+
+BEC_habitat_r <- terra::rasterize(BEC_habitat, Vegetation, field = "MAP_LABEL", touches=TRUE, align=TRUE)
+terra::writeRaster(BEC_habitat_r, filename=file.path(paste0(here::here("BEC"),"/","BEC_habitat.tif")), filetype = "GTiff", gdal="COMPRESS=NONE", overwrite=TRUE)
+BEC_habitat_r <- terra::rast(dir(here::here("BEC"), pattern= "BEC_habitat.tif$", full.names=TRUE))
+
+plot(BEC_habitat_r)
+levels(BEC_habitat_r)
+#[[1]]
+#  value MAP_LABEL
+#1     0    BAFAun
+#2     1   ESSFmcp
+#3     2   ESSFmvp
+#4     3   ESSFwcp
+#5     4    SWBmks
+
+
+################################################################
+## Retained for reference only to stars package and its utilities.
+
+# Switch from SpatVector terra to stars package to rasterize BEC_habitat from the vector data
+#Vegetation <- stars::st_as_stars(Vegetation)
+#BEC_habitatr = st_rasterize(BEC_habitat[,"MAP_LABEL"], template=Vegetation, align=TRUE)
+#plot(BEC_habitatr, breaks = "equal", col = hcl.colors(33, "Spectral"), reset = FALSE)
+#BEC_habitatr <- round(BEC_habitatr/100)
+
+# stars to terra
+#Vegetation = as(Vegetation, "SpatRaster")
+#BEC_habitatra = as(BEC_habitatr, "SpatRaster")
+
+#BEC_habitatr_mat <- matrix(nrow = 7, ncol = 3)
+#BEC_habitatr_mat[1, ] <- c(0,50,1) # from,to = 1 
+#BEC_habitatr_mat[2, ] <- c(50,100,2) # from,to = 2
+#BEC_habitatr_mat[3, ] <- c(00,150,3) # from,to = 3
+#BEC_habitatr_mat[4, ] <- c(300,400,4) # from,to = 4
+#BEC_habitatr_mat[5, ] <- c(400,500,5) # from,to = 5
+#BEC_habitatr_mat[6, ] <- c(500,600,6) # from,to = 6
+#BEC_habitatr_mat[7, ] <- c(700,Inf,7) # from,to = 7
+
+#BEC_habitatra <- terra::classify(BEC_habitatra, BEC_habitatr_mat, include.lowest=TRUE)
+################################################################
+
+## BEC Habitat classification continued:
+
+## The BEC_habitat variable can be all classified as 1 or varied in the model. This gives the option to vary and weight the site series. Claudia Howers suggested "BAFAun would be highest. All the other would be of equal value".
+
+
+```
+
+```

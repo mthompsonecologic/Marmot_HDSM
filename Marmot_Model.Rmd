@@ -1,0 +1,1282 @@
+---
+title: "Marmot Model"
+author: "Mark Thompson"
+date: '2022-07-12'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Packages for installation
+
+The modelling component of the deliverable required more packages with dependencies in newer phases of development. Hence, the packages do not install simply. This section may require multiple runs through the installations with your version of r-stats to get these to work together. Prompts will appear and you they must be read and addressed accordingly. Suggestion: run the package installations and then the library functions separately.
+
+```{r echo=FALSE}
+
+install.packages("terra")
+library(terra)
+install.packages("sp")
+library(sp)
+install.packages("raster")
+install.packages("here")
+install.packages("mgcv")
+install.packages("librarian")
+install.packages("rgbif") ## This is to run the examples in PseuAbs and learn the structure accessing data from the Global Biodiversity Information Facility API
+install.packages("rgdal")
+install.packages("biomod2", dependencies = TRUE)
+install.packages("plyr")
+install.packages("ggplot2")
+install.packages("viridis")
+install.packages("RColorBrewer")
+install.packages("gratia", dependencies = TRUE)
+install.packages("usdm", repos="http://R-Forge.R-project.org")
+
+```
+
+Install from source libraries using the library package
+
+```{r echo = FALSE}
+
+library(librarian)
+install.packages("remotes")
+
+stock("filBe87/PseuAbs", lib =  tempdir(), cran_repo = "https://github.com/") # The PseuAbs package is not yet published, so the library package is used to go directly to the GitHub repository to load the developers version.
+
+
+remotes::install_github("samclifford/mgcv.helper")
+#remotes::install_github("filBe87/PseuAbs")
+#stock("samclifford/mgcv.helper", lib =  tempdir(), cran_repo = "https://github.com/") # Requires direct access.
+
+```
+
+Set the libraries
+
+```{r echo=FALSE}
+library(here)
+library(terra)
+library(raster)
+library(mgcv)
+library(mgcv.helper)
+library(librarian)
+library(rgbif)
+library(sp)
+library(rgdal)
+
+#library(biomod2) ## There are compatability issues with this one package. It can be removed, because it was just used to trial examples to check for standards of formatting from Guisan et al. (2017. Habitat Suitability and Distribution Models. Cambridge University Press). The explanatory rasters in this code meet the same formatting as the Biomod bio1...n rasters, which is one of the earliest SDM packages (See: Booth, T. H. (2018). Why understanding the pioneering and continuing contributions of BIOCLIM to species distribution modelling is important. Austral Ecology, 43(8), 852–860. https://doi.org/10.1111/aec.12628).
+
+library(plyr)
+library(ggplot2)
+library(viridis)
+library(RColorBrewer)
+library(gratia)
+library(usdm)
+library(PseuAbs)
+
+
+
+```
+# Variance inflation factor check
+
+The variance inflation factor is used to identify and remove colinearity in the explanatory variables (Zuur et al. 2009. Mixed effects models and extensions in ecology with R. New York: Springer). A "rule of thumb" threshold is between 5-7.
+
+See: https://stats.stackexchange.com/questions/370869/checking-multicollinearity-with-generalized-additive-model-in-r
+
+Meyer (2021) proposes a different approach with package usdm. The usdm approach is done prior, the mgcv.helper::vif.gam() is completed after the gam model is drafted. The explanatory rasters (from  Marmot_ExplanatoryRasters.Rmd) are front loaded here for use in code chunks that follow.
+
+
+```{r VIF, echo=FALSE}
+
+## The Explanatory Rasters.
+ExpRasters <- c("Climate_MSP", "Climate_DD_0", "Climate_NFFD", "Climate_PAS", "habitat_aspect", "habitat_slope", "TKDN_Rough", "HR_hibernate", "HR_feeding", "Vegetation", "BEC_habitat", "BEC_habitata")
+
+## Reduce the habitat models. The different habitat models will be analyzed separately. As a starting null, BEC_habitat0 is included for the VIF check.
+ExpRastersr <- c("Climate_MSP", "Climate_DD_0", "Climate_NFFD", "Climate_PAS", "TKDN_Rough", "Vegetation")
+
+Rasters_list <- list()
+Rasters_stack <- list()
+
+for(i in 1:length(ExpRastersr)){
+  Rasters_list[[i]] <- rast(paste0(here::here("HSDM_Marmot", "Inputs"),"/",ExpRasters[i],".tif"))
+  Rasters_stack[[i]] <- raster(Rasters_list[[i]])
+  }
+
+Rasters_stack <- raster::stack(Rasters_stack)
+
+## Turn on to reset the VIF test - the results are posted after:
+#set.seed(123)
+#vif <- usdm::vifstep(Rasters_stack, th = 5)
+#vif
+
+#1 variables from the 6 input variables have collinearity problem: 
+# 
+#Climate_NFFD 
+#
+#After excluding the collinear variables, the linear correlation coefficients ranges between: 
+#min correlation ( habitat_aspect ~ Climate_PAS ):  -0.01226725 
+#max correlation ( Climate_PAS ~ Climate_MSP ):  0.8067904 
+
+#---------- VIFs of the remained variables -------- 
+
+## Therefore:
+
+ModelRast <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern = paste0(c("Climate_MSP.tif$", "Climate_DD_0.tif$", "Climate_PAS.tif$", "habitat_aspect.tif$", "habitat_slope.tif$", "TKDN_Rough.tif$", "^HR_hibernate.tif$", "HR_feeding.tif$", "Vegetation.tif$", "BEC_habitat.tif$", "BEC_habitata.tif$"), collapse = "|"), full.names = TRUE))
+
+
+### To run a lower resolution model @ 50 m
+#Full
+##ExpRasters_F5 <- c("Climate_MSP_F5","Climate_DD_0_F5","Climate_NFFD_F5","Climate_PAS_F5","habitat_aspect_F5","habitat_slope_F5","TKDN_Rough_F5","HR_hibernate_F5","HR_feeding_F5","Vegetation_F5","BEC_habitat_F5","BEC_habitat0_F5","BEC_habitata_F5")
+
+## I use only the rasters for Model 2b that was tested at the finer resolution.
+ExpRastersr_F5 <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern = paste0(c("Climate_MSP_F5a.tif$","Climate_DD_0_F5a.tif$","Climate_PAS_F5a.tif$","TKDN_Rough_F5a.tif$","Vegetation_F5a.tif$","^HR_hibernate_F5a.tif$"), collapse = "|"), full.names = TRUE))
+
+names(ExpRastersr_F5) <- c("Climate_DD_0_F5","Climate_MSP_F5","Climate_PAS_F5","HR_hibernate_F5","TKDN_Rough_F5","Vegetation_F5")
+
+```
+
+# Preparing the presence data
+  
+```{r echo = FALSE}  
+  
+## Marmot presence points
+  
+  Marmot.presence <- read.csv(paste0(here::here("HSDM_Marmot", "Inputs"),"/","MarmotPoints.csv"), stringsAsFactors = FALSE)
+ 
+  Marmot.presence_mat <- cbind(Marmot.presence$e, Marmot.presence$n)
+  row.names(Marmot.presence_mat) <- 1:nrow(Marmot.presence_mat)
+  
+  Z9CRS <- CRS("+proj=utm +zone=9 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+  Marmot.presence_sp <- SpatialPoints(Marmot.presence_mat, proj4string = Z9CRS)
+  Marmot.presence_df <- as.data.frame(Marmot.presence_sp) ## For use later on.
+
+```
+
+# Sample the explanatory rasters with presence points
+
+Snippets of this code were developed using the older raster package. The same can be run with the new terra package and it should run a little faster, but this works and is sufficient for what it does.
+
+```{r echo = FALSE}
+
+Presence_df <- Marmot.presence[,2:3]
+coordinates(Presence_df) <- c(1,2)
+crs(Presence_df) <- crs(ModelRast)
+Presence_df <- vect(Presence_df)
+Presence_Points <- raster::extract(x = ModelRast, y = Presence_df, cells = TRUE, xy=TRUE) ## Note, this rounds the UTM to the nearest 5 m. Therefore:
+
+## Some of the vegetation pixels have NAs - remove these.
+Presence_Points <- subset(Presence_Points, !is.na(Presence_Points$Vegetation) == TRUE, value = TRUE)
+
+Presence_Points <- as.data.frame(Presence_Points)
+names(Presence_Points)[names(Presence_Points) == "x"] <- "E"
+names(Presence_Points)[names(Presence_Points) == "y"] <- "N"
+
+## F5 resolution
+Presence_df <- Marmot.presence[,2:3]
+coordinates(Presence_df) <- c(1,2)
+crs(Presence_df) <- crs(ModelRast)
+Presence_df <- vect(Presence_df)
+Presence_Points_F5 <- raster::extract(x = ExpRastersr_F5, y = Presence_df, cells = TRUE, xy=TRUE) ## Note, this rounds the UTM to the nearest 5 m. Therefore:
+
+## Some of the vegetation pixels have NAs - remove these.
+Presence_Points_F5 <- subset(Presence_Points_F5, !is.na(Presence_Points_F5$Vegetation) == TRUE, value = TRUE)
+
+Presence_Points_F5 <- as.data.frame(Presence_Points_F5)
+names(Presence_Points_F5)[names(Presence_Points_F5) == "x"] <- "E"
+names(Presence_Points_F5)[names(Presence_Points_F5) == "y"] <- "N"
+
+```
+
+# Generate pseudo-absent data
+
+This code chunk uses the PseuAbs rstats package, that was developed by:
+
+Descombes, P., Chauvier, Y., Brun, P., Righetti, D., Wüest, R.O., Karger, D.N., Zurell, D. & Zimmermann, N.E. (2022). Strategies for sampling pseudo-absences for species distribution models in complex mountainous terrain. bioRxiv, 2022.03.24.485693.
+
+The source code was reviewed through the GitHub source:
+
+https://github.com/filBe87/PseuAbs/blob/0744d9a753d570524140b0182f9e33e99d1a4585/R/wsl_samplePseuAbs.R
+
+There are three pseu.abs samples that are varied by the "add.strat = x" parameters. The value equals the proportion of pseudo samples that are sampled out of the stratification. So a setting of 0.2 will mean that 20% of the psdeuo-absences are randomly sampled within strata and 80% are randomly sampled without stratification. In contrast, a setting of 0.8 produces a more clumped psdeuo-absence sampling distribution within the strata with 20% sampling into areas outside of what might be expected as suitable habitat. A setting of 0.8 is selected for the model used, but other values can be tested. Note also that I use "presence", which includes only 33 of the original 66 known points. These were trimmed to include only points that exist within a vegetation pixel that was not classified with a "NA" value. The vegetation "NA" pixels can be filled in using other remote sensing data, such as a radar based NDVI. However, some of the values are "NA" by chance and this adds a layer of uncertainty in the input data. Adding uncertainty in the input data can improve on the predictability of the model. The PseuAbs package removes presence data in the sampling process.
+
+The current explanatory rasters include:
+
+ExpRasters <- c("Climate_MSP", "Climate_DD_0", "Climate_PAS", "habitat_aspect", "habitat_slope", "TKDN_Rough", "HR_hibernate", "HR_feeding", "Vegetation", "BEC_habitat", "BEC_habitat0", "BEC_habitata")
+
+We do not want the models, so a reduced set is needed:
+
+Pseudo_ExpRasters <- c("Climate_MSP", "Climate_DD_0", "Climate_PAS", "habitat_aspect", "habitat_slope", "TKDN_Rough", "Vegetation")
+
+If the other rasters are used the sampling will remove any sites classed as NA and we do not want these removed as 'NA' in our case does not necessarily represent absence, but not an applicable habitat; for example, not expected for hibernating could be NA, while the same location could be expected for feeding and would not be NA.
+
+```{r echo = FALSE}
+
+###############
+# This code was used to build the Pseudo absence data - it is coded out to save time, but it is functional and needs to be
+# turned on to re-run and obtain the data.
+#Pseudo_ExpRasters <- c("Climate_MSP", "Climate_DD_0", "Climate_PAS", "habitat_aspect", "habitat_slope", "TKDN_Rough", "Vegetation")
+
+#P_Rasters_list <- list()
+#P_Rasters_stack <- list()
+
+#for(i in 1:length(Pseudo_ExpRasters)){
+#  P_Rasters_list[[i]] <- rast(paste0(here::here("HSDM_Marmot", "Inputs"),"/",Pseudo_ExpRasters[i],".tif"))
+#  P_Rasters_stack[[i]] <- raster(P_Rasters_list[[i]])
+#  }
+
+#P_Rasters_stack <- stack(P_Rasters_stack)
+##############
+
+# Random and thin presences by default resolution (determined by template raster), include stratification estimate
+#pseu.abs = wsl.samplePseuAbs(type="random",
+#                            n=5000,
+#                            env.stack=P_Rasters_stack,
+#                            template_dir=here::here("HSDM_Marmot","Stratification"),
+#                            pres=Presence_df,
+#                            geores_fact=3,
+#                            add.strat=0.5,
+#                            env.strat_path=here::here("HSDM_Marmot","Stratification"),
+#                            force_spat_thin='presences'
+#                            )
+
+#xy_pres=pseu.abs@xy[which(pseu.abs@pa==1),]
+#xy_abs=pseu.abs@xy[which(pseu.abs@pa==0),]
+#rst=raster(pseu.abs@meta$template_file)
+
+# plot(rst,col=c("#f0f0f0","#99d8c9"),
+#     main=pseu.abs@meta$type,legend=F)
+#  points(xy_abs,pch=20,cex=.5,col="#00000020")
+#  points(xy_pres,pch=2,cex=.5,col="darkred")
+
+#pseu.abs2 = wsl.samplePseuAbs(type="random",
+#                            n=5000,
+#                            env.stack=P_Rasters_stack,
+#                            template_dir=here::here("HSDM_Marmot","Stratification"),
+#                            pres=Presence_df,
+#                            geores_fact=3,
+#                            add.strat=0.2,
+#                            env.strat_path=here::here("HSDM_Marmot","Stratification"),
+#                            force_spat_thin='presences'
+#                            )
+
+#xy_pres2=pseu.abs2@xy[which(pseu.abs2@pa==1),]
+#xy_abs2=pseu.abs2@xy[which(pseu.abs2@pa==0),]
+#rst2=raster(pseu.abs2@meta$template_file)
+
+# plot(rst2,col=c("#f0f0f0","#99d8c9"),
+#     main=pseu.abs2@meta$type,legend=F)
+#  points(xy_abs2,pch=20,cex=.5,col="#00000020")
+#  points(xy_pres2,pch=2,cex=.5,col="darkred")
+  
+#### I settled on this model, because it clumps the pseudo absent points closer into the stratra, it takes a while to
+#### run so it is commented out to just load the saved version that follows.
+#pseu.abs3 = wsl.samplePseuAbs(type="random",
+#                            n=5000,
+#                            env.stack=P_Rasters_stack,
+#                            template_dir=here::here("HSDM_Marmot","Stratification"),
+#                            pres=Presence_df,
+#                            geores_fact=3,
+#                            add.strat=0.8,
+#                            env.strat_path=here::here("HSDM_Marmot","Stratification"),
+#                            force_spat_thin='presences'
+#                            )
+
+#Env_Strat <- terra::rast(paste0(here::here("HSDM_Marmot","Stratification"),"/","template3.tif"))
+
+#saveRDS(pseu.abs3, file = paste0(here::here("HSDM_Marmot", "Inputs"),"/pseu.abs3.rds"))
+
+## Run from here to just load in the data from pseu.abs3, which is what I decided to use after inspection of the outputs.
+pseu.abs3 <- readRDS(file = paste0(here::here("HSDM_Marmot", "Inputs"),"/pseu.abs3.rds"))
+
+xy_pres3=pseu.abs3@xy[which(pseu.abs3@pa==1),]
+xy_abs3=pseu.abs3@xy[which(pseu.abs3@pa==0),]
+rst3=raster(pseu.abs3@meta$template_file)
+
+pseu.abs <- as.data.frame(pseu.abs3@env_vars)
+EN <- as.data.frame(unlist(pseu.abs3@xy))  ## The pseudo-absences are rounded, which is okay.
+pseu.abs <- cbind(EN[,1],EN[,2])
+colnames(pseu.abs) <- c("E","N")
+rownames(pseu.abs) <- 1:nrow(pseu.abs)
+pseu.abs <- as.data.frame(unlist(pseu.abs))
+pseu.abs <- pseu.abs[-c(1:33),] ## Remove the presence that was added in the first 33
+rownames(pseu.abs) <- 1:nrow(pseu.abs)
+
+coordinates(pseu.abs) <- c(1,2)
+crs(pseu.abs) <- crs(ModelRast)
+pseu.abs <- vect(pseu.abs)
+
+writeVector(pseu.abs,paste0(here::here("HSDM_Marmot", "Outputs"),"/pseu_abs.shp"), overwrite=TRUE)
+
+pseu_abs <- terra::extract(x = ModelRast, y = pseu.abs, cells = TRUE, xy = TRUE)
+
+pseu_abs <- as.data.frame(pseu_abs)
+
+#####################
+## Lower F5 resolution
+#Pseudo_ExpRasters_F5 <- c("Climate_MSP_F5", "Climate_DD_0_F5", "Climate_PAS_F5", "TKDN_Rough_F5", "Vegetation_F5","HR_hibernate_F5")
+                          
+#P_Rasters_list_F5 <- list()
+#P_Rasters_stack_F5 <- list()
+
+#for(i in 1:length(Pseudo_ExpRasters_F5)){
+#  P_Rasters_list_F5[[i]] <- rast(paste0(here::here("HSDM_Marmot", #"Inputs"),"/",Pseudo_ExpRasters_F5[i],"a.tif"))
+#  P_Rasters_stack_F5[[i]] <- raster(P_Rasters_list_F5[[i]])
+# }
+
+#P_Rasters_stack_F5 <- stack(P_Rasters_stack_F5)
+
+#pseu.abs3_F5 = wsl.samplePseuAbs(type="random",
+#                            n=5000,
+#                            env.stack=P_Rasters_stack_F5,
+#                            template_dir=here::here("HSDM_Marmot","Stratification"),
+#                            pres=as(Presence_df,"Spatial"),
+#                            geores_fact=3,
+#                            add.strat=0.8,
+#                            env.strat_path=here::here("HSDM_Marmot","Stratification"),
+#                            force_spat_thin='presences'
+#                            )
+
+#Env_Strat <- terra::rast(paste0(here::here("HSDM_Marmot","Stratification"),"/","template3.tif"))
+
+#saveRDS(pseu.abs3_F5, file = paste0(here::here("HSDM_Marmot", "Inputs"),"/pseu.abs3_F5.rds"))
+pseu.abs3_F5 <- readRDS(file = paste0(here::here("HSDM_Marmot", "Inputs"),"/pseu.abs3_F5.rds"))
+
+xy_pres3=pseu.abs3_F5@xy[which(pseu.abs3_F5@pa==1),]
+xy_abs3=pseu.abs3_F5@xy[which(pseu.abs3_F5@pa==0),]
+rst3=raster(pseu.abs3_F5@meta$template_file)
+
+pseu.abs_F5 <- as.data.frame(pseu.abs3_F5@env_vars)
+EN <- as.data.frame(unlist(pseu.abs3_F5@xy))  ## The pseudo-absences are rounded, which is okay.
+pseu.abs_F5 <- cbind(EN[,1],EN[,2])
+colnames(pseu.abs_F5) <- c("E","N")
+rownames(pseu.abs_F5) <- 1:nrow(pseu.abs_F5)
+pseu.abs_F5 <- as.data.frame(unlist(pseu.abs_F5))
+pseu.abs_F5 <- pseu.abs_F5[-c(1:33),] ## Remove the presence that was added in the first 33
+rownames(pseu.abs_F5) <- 1:nrow(pseu.abs_F5)
+
+coordinates(pseu.abs_F5) <- c(1,2)
+crs(pseu.abs_F5) <- crs(ExpRastersr_F5)
+pseu.abs_F5 <- vect(pseu.abs_F5)
+
+pseu_abs_F5 <- terra::extract(x = ExpRastersr_F5, y = pseu.abs_F5, cells = TRUE, xy = TRUE)
+
+## Note, this rounds the UTM. 
+
+pseu_abs_F5 <- as.data.frame(pseu_abs_F5)
+names(pseu_abs_F5)[names(pseu_abs_F5) == "x"] <- "E"
+names(pseu_abs_F5)[names(pseu_abs_F5) == "y"] <- "N"
+
+
+###
+# Lower add.strat to 0.2 - modelling of this was attempted but not completed. Retain for refinement for publication purposes.
+
+Pseudo_ExpRasters_F5 <- c("Climate_MSP_F5", "Climate_DD_0_F5", "Climate_PAS_F5", "TKDN_Rough_F5", "Vegetation_F5","HR_hibernate_F5")
+                          
+P_Rasters_list_F5 <- list()
+P_Rasters_stack_F5 <- list()
+
+for(i in 1:length(Pseudo_ExpRasters_F5)){
+  P_Rasters_list_F5[[i]] <- rast(paste0(here::here("HSDM_Marmot", "Inputs"),"/",Pseudo_ExpRasters_F5[i],"a.tif"))
+  P_Rasters_stack_F5[[i]] <- raster(P_Rasters_list_F5[[i]])
+ }
+
+P_Rasters_stack_F5 <- stack(P_Rasters_stack_F5)
+
+pseu.abs2_F5 = wsl.samplePseuAbs(type="random",
+                            n=5000,
+                            env.stack=P_Rasters_stack_F5,
+                            template_dir=here::here("HSDM_Marmot","Stratification"),
+                            pres=as(Presence_df,"Spatial"),
+                            geores_fact=3,
+                            add.strat=0.2,
+                            env.strat_path=here::here("HSDM_Marmot","Stratification"),
+                            force_spat_thin='presences'
+                            )
+
+Env_Strat <- terra::rast(paste0(here::here("HSDM_Marmot","Stratification"),"/","template3.tif"))
+
+saveRDS(pseu.abs2_F5, file = paste0(here::here("HSDM_Marmot", "Inputs"),"/pseu.abs2_F5.rds"))
+pseu.abs2_F5 <- readRDS(file = paste0(here::here("HSDM_Marmot", "Inputs"),"/pseu.abs2_F5.rds"))
+
+xy_pres2=pseu.abs2_F5@xy[which(pseu.abs2_F5@pa==1),]
+xy_abs2=pseu.abs2_F5@xy[which(pseu.abs2_F5@pa==0),]
+rst2=raster(pseu.abs2_F5@meta$template_file)
+
+EN <- as.data.frame(unlist(pseu.abs2_F5@xy))  ## The pseudo-absences are rounded, which is okay.
+pseu.abs2_F5 <- as.data.frame(pseu.abs2_F5@env_vars)
+pseu.abs2_F5 <- cbind(EN[,1],EN[,2])
+pseu.abs2_F5 <- as.data.frame(pseu.abs2_F5)
+colnames(pseu.abs2_F5) <- c("E","N")
+rownames(pseu.abs2_F5) <- 1:nrow(pseu.abs2_F5)
+pseu.abs2_F5 <- pseu.abs2_F5[-c(1:33),] ## Remove the presence that was added in the first 33
+
+coordinates(pseu.abs2_F5) <- c(1,2)
+crs(pseu.abs2_F5) <- crs(ExpRastersr_F5)
+pseu.abs2_F5 <- vect(pseu.abs2_F5)
+
+pseu_abs2_F5 <- terra::extract(x = ExpRastersr_F5, y = pseu.abs2_F5, cells = TRUE, xy = TRUE)
+
+## Note, this rounds the UTM. 
+
+pseu_abs2_F5 <- as.data.frame(pseu_abs2_F5)
+names(pseu_abs2_F5)[names(pseu_abs2_F5) == "x"] <- "E"
+names(pseu_abs2_F5)[names(pseu_abs2_F5) == "y"] <- "N"
+
+
+
+```  
+
+
+## Collating pseudo-absence with presence 
+
+This code chunk is repeated again further below for the lower 50 m resolution product. The full resolution was attempted but the computation requirements were beyond the workstation system requirement at the time that this was run. A cloud-computing option is an option or increasing RAM speed might be sufficient. The current RAM installed is 64 GB on a 6 Core Dell Precision 5860 workstation. Packages are being regularly updated with options to parallel process across cores. The new "terra" package has this option but there were incompatibility issues with the mgcv model outputs for use with the predict function. A number of troubleshooting issues were posted on StackOverflow as some of these packages are new and updated in 2022 the cross-links between them are still require custom support and deeper investigations into the GitHub script.
+
+```{r echo = FALSE}
+############################## GAM model Biomod example
+
+# Collating Presence_Points with pseu_abs, but first the e,n is lowercase in Presence_Points:
+
+Presence_Points <- Presence_Points[,c(15:17,2:14)]
+pseu_abs <- pseu_abs[,c(15:17,2:14)]
+colnames(Presence_Points) <- c("cells", "E", "N","BEC_habitat","BEC_habitata","BECvar","Climate_DD_0","Climate_MSP","Climate_PAS","habitat_aspect","habitat_slope","HibfeeRC","HR_feeding","HR_hibernate","TKDN_Rough","Vegetation")
+colnames(pseu_abs) <- c("cells", "E", "N","BEC_habitat","BEC_habitata","BECvar","Climate_DD_0","Climate_MSP","Climate_PAS","habitat_aspect","habitat_slope","HibfeeRC","HR_feeding","HR_hibernate","TKDN_Rough","Vegetation")
+
+Presence_Points$PA <- 1
+pseu_abs$PA <- 0
+
+## Preparing the data - assigning as factors and numerical while also replacing "NaN" with "NA":
+Marmot_data <- rbind(Presence_Points,pseu_abs)
+Marmot_data$HR_hibernate <- factor(Marmot_data$HR_hibernate)
+Marmot_data$HR_feeding <- factor(Marmot_data$HR_feeding)
+
+Marmot_data$BEC_habitat <- gsub("<NA>", NA, Marmot_data$BEC_habitat, fixed = TRUE)
+#Marmot_data$BEC_habitat0 <- gsub("NaN", NA, Marmot_data$BEC_habitat0, fixed = TRUE)
+Marmot_data$BEC_habitata <- gsub("NaN", NA, Marmot_data$BEC_habitata, fixed = TRUE)
+
+Marmot_data$BEC_habitat <- factor(Marmot_data$BEC_habitat)
+#Marmot_data$BEC_habitat0 <- factor(Marmot_data$BEC_habitat0)
+Marmot_data$BEC_habitata <- factor(Marmot_data$BEC_habitata)
+Marmot_data$PA <- factor(Marmot_data$PA)
+
+Marmot_data$cells <- as.numeric(Marmot_data$cells)
+Marmot_data$Climate_MSP <- as.numeric(Marmot_data$Climate_MSP)
+Marmot_data$Climate_DD_0 <- as.numeric(Marmot_data$Climate_DD_0)
+Marmot_data$Climate_PAS <- as.numeric(Marmot_data$Climate_PAS)
+Marmot_data$habitat_aspect <- as.numeric(Marmot_data$habitat_aspect)
+Marmot_data$habitat_slope <- as.numeric(Marmot_data$habitat_slope)
+Marmot_data$TKDN_Rough <- as.numeric(Marmot_data$TKDN_Rough)
+Marmot_data$Vegetation <- as.numeric(Marmot_data$Vegetation)
+
+```
+
+
+# Generalized Additive Modelling
+
+An excellent review on Generalized Additive Modelling is accessible through Gavin Simpson's lecture series, which was reviewed for the analysis presented herein:
+
+https://fromthebottomoftheheap.net/
+https://www.youtube.com/watch?v=sgw4cu8hrZM
+
+Dr. Simpson is Assistant Professor of Applied Biometrics and has published papers applicable to the methods used. The process requires iterative checking to establish k and the type of model appropriate for the data.
+
+The structure of the script used is based on the scripting of Meyer, J. (2021) Species Distribution Modelling with GAMs. Student Tutorials. https://geomoer.github.io/moer-bsc-project-seminar-SDM/unit99/student_tutorials-02b_GAM_Meyer.html; however, a number of updates were required to switch from the older raster package to the new terra package. The terra package has some internal parallel processing that the author has programmed into it, so it runs higher resolution predictions. These are computationally intensive and were performed on a Dell precision 5820 workstation with 6 cores, 32 Gb RAM, and 3.8 GHz Intel CPU.
+
+Required background reading:
+
+Pedersen, E.J., Miller, D.L., Simpson, G.L. & Ross, N. (2019). Hierarchical generalized additive models in ecology: an introduction with mgcv. PeerJ, 7, e6876.
+
+Ross, N. (2017): Nonlinear Models in R: The Wonderful World of mgcv. https://nyhackr.blob.core.windows.net/presentations/Nonlinear-Modeling-in-R-with-GAMs_Noam-Ross.pdf
+
+Simpson, G.(2020): Introduction to Generalized Additive Models with R and mgcv. https://github.com/gavinsimpson/intro-gam-webinar-2020/blob/master/README.md
+
+Wood, S.N., Pya N. & B. Saefken (2016): Smoothing parameter and model selection for general smooth models. Journal of the American Statistical Association 111, 1548-1575.
+
+Wood, S.N. (2006): Generalized additive models : an introduction with R. Texts in statistical science.
+
+These are the model parameters or in the spatial estimation they may otherwise be called the explanatory rasters:
+
+> Rasters_list <- list()
+> Rasters_list[[1]] <- Climate_MSP
+> Rasters_list[[2]] <- Climate_DD_0
+> Rasters_list[[3]] <- Climate_NFFD
+> Rasters_list[[4]] <- Climate_PAS
+> Rasters_list[[5]] <- habitat_aspect
+> Rasters_list[[6]] <- habitat_slope
+> Rasters_list[[7]] <- TKDN_Rough
+> Rasters_list[[8]] <- HR_hibernate
+> Rasters_list[[9]] <- HR_feeding
+> Rasters_list[[10]] <- Vegetation # This is EVI2
+> Rasters_list[[11]] <- BEC_habitat
+> Rasters_list[[12]] <- BEC_habitat0
+> Rasters_list[[13]] <- BEC_habitata
+
+The response variable is marmot presence. The smooth term parameters need to be investigated for their wiggliness (K basis size setting the limit on edf) and assumptions (e.g., isotropy TPRS or cyclical CRS); details are available in Pederson et al. (2019)
+
+The t2() function for tensor products in the smoothing terms "...separates each penalty into penalized (range space) and unpenalized components (null space; components that don’t have derivatives, such as intercept and linear terms in a one-dimensional cubic spline)" (Pederson et al. 2019, p. 7). Essentially it allows linear terms to be brought into the model without penality. The te() function applies to all other types of interactions where the parameters are expected to to co-vary in a similar way, such as roughness, slope, and aspect.
+
+## Pederson et al. (2019) review notes
+The nature of parameters will likely require the 5th model in Pederson et al. (2019):
+
+"Group-specific smoothers with different wiggliness" (p. 8)
+
+The groups are:
+1. Climate:
+Climate_MSP, Climate_DD_0, Climate_NFFD, Climate_PAS
+
+2. Terrain:
+habitat_aspect, habitat_slope, TKDN_Rough
+
+3. Vegetation
+Vegetation (This is EVI2)
+
+4. Habitat
+HR_hibernate, HR_feeding, BEC_habitat, BEC_habitat0, BEC_habitata
+
+These may also have a "A global smoother plus group-level smoothers that have the same wiggliness", so an exploratory statistical analysis is produced using gam.check and plotting the residuals and confidence intervals in a q-q plot.
+
+Factor data requires special management of the basis splines and smoother interactions. The factor data (e.g., Habitat) requires that k must be equal to the number of factor levels. The basis spline should to be set to a factor spline (bs = 'fs') or a random effect (bs = 're'). Factor smooth interactions are discussed on slide 52 of Gavin Simpsons online tutorial video (time 1:21).
+
+Thin plate spines (bs = 'ts') are the default and are isotropic with same smoothness for each parameter making them sensitive to scale; such a situation could occur where northing has bigger impact than easting. Tensor product smooths [e.g., te(x,y)] can be used to bult the interaction. Duchon splines (bs = 'ds') are better for spatial data.
+
+Note that performance issues were faced when running many of these models. "Usually, a major contributer to fitting difficulties is that the model is a very poor description of the data". (Wood, https://stat.ethz.ch/R-manual/R-devel/library/mgcv/html/gam.convergence.html). However, there are a number of things that can be tried to converge and suggestions from the link were explored in this analysis including trying the "bfgs" optimizer over the default Newton algorithm and using a Gaussian Process (bs = 'gp') spline rather than a Duchon. The gp option also works for spatial data allowing for heterogeneity (Comber, A., Harris, P., and Brunsdon, C.: Spatially Varying Coefficient Regression with GAM Gaussian Process splines: GAM(e)-on, AGILE GIScience Ser., 3, 31, https://doi.org/10.5194/agile-giss-3-31-2022, 2022.)
+
+```{r echo = FALSE}
+## This is the GAM from Meyer (2021): 
+## presence ~ s(x, y, bs = "ds") + s(Mean_Temperature_of_Wettest_Quarter) + 
+##     s(Precipitation_Seasonality) + s(Precipitation_of_Warmest_Quarter) + 
+##     s(Mean_Diurnal_Range) + s(Temperature_Seasonality) + s(Mean_Temperature_of_Wettest_Quarter) + 
+##     s(Mean_Temperature_of_Driest_Quarter)
+
+##Note: gam.check is run on each to adjust the k values per methods of Simpson (2020) so that the k-value is manually increased until the k-index >= 1.00
+m1 = mgcv::gam(PA ~ s(E, N, k=400, bs = "gp") +
+                s(Climate_MSP, k=3, m=2) +              # GAM model with all predictor variables on it
+                s(Climate_DD_0, k=3, m=2) + 
+                s(Climate_PAS, k=3, m=2) + 
+                s(habitat_aspect, k=3, m=2) +
+                s(habitat_slope, k=3, m=2) + 
+                s(TKDN_Rough, k=3, m=2) +
+                s(Vegetation, k=3, m=2),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m1)                                     # summary of the GAM results
+
+
+# In this model I use the fs = factor smooth basis function, which gives a smooth function for each level. Specify m=1 to penalize squared 1st derivative (see Pederson et al. 2019)
+m2 = mgcv::gam(PA ~ s(E, N, k=250, bs = "gp") +
+                s(Climate_MSP, HR_hibernate, k=5, m=2, bs = "fs") +
+                s(Climate_DD_0, HR_hibernate, k=5, m=2, bs = "fs") + 
+                s(Climate_PAS, HR_hibernate, k=5, m=2, bs = "fs") + 
+                s(TKDN_Rough, HR_hibernate, k=6, m=2, bs = "fs") +
+                s(Vegetation, HR_hibernate, k=6, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+summary(m2)                                     # summary of the GAM results
+gam.check(m2) ## the k-index is mostly >1, the roughness and vegetation are 0.99, but not significant.The k was adjusted heuristically. A different optimizer was used to help with the convergence issues. This will not greatly change the model comparison where others use the default Newton optimizer.
+
+m2b = mgcv::gam(PA ~ s(E, N, k=300, bs = "gp") +
+                s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2b)                                     # summary of the GAM results
+gam.check(m2b) ## the k-index is mostly >1, the roughness and vegetation are 0.99, but not significant.
+
+
+
+m3 = mgcv::gam(PA ~ s(Climate_MSP, k=5, m=2) +              # GAM model with all predictor variables on it
+                s(Climate_DD_0, k=10, m=2) + 
+                s(Climate_PAS, k=5, m=2) + 
+                s(habitat_aspect, habitat_slope, k=80, m=2, bs = 'gp') +
+                s(TKDN_Rough, k=5, m=2) +
+                s(HR_hibernate, bs = 're'), ## Categorical variable requires a "random effect" - basis function
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m3)
+
+## A very simple model
+m4 <- mgcv::gam(PA ~ s(E,N, k=200, bs = "gp") +
+                s(Climate_MSP, k=3, m=2) +
+                s(TKDN_Rough, k=3, m=2) +
+                s(HR_hibernate, k=4, bs = 're'), ## Categorical variable requires a "random effect" - basis function
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+
+summary(m4)
+
+## Simplest model
+m5 <- mgcv::gam(PA ~ s(E,N, k=300, bs = "gp"),
+                data=Marmot_data,
+                method = "REML",
+                family=binomial
+         )
+
+summary(m5) ## At 300 the k-index is still at 0.85 and the model slows down. Options to look at parallel processing or to move on. The fitting had a final step failure, which is described here https://stats.stackexchange.com/questions/576273/gam-model-warning-message-step-failure-in-theta-estimation
+
+## Alternative models
+
+m6 <- mgcv::gam(PA ~ s(E,N, k=200, bs = "gp") +
+                s(BEC_habitat, k=5, bs = "re"),
+                data=Marmot_data,
+                method = "REML",
+                family=binomial
+         )
+
+summary(m6)
+
+#m7 <- mgcv::gam(PA ~ s(E,N, k=200, bs = "ds") +
+#                s(BEC_habitat0),
+#                data=Marmot_data,
+#                method = "REML",
+#                family=binomial
+#         )
+
+#summary(m7)
+
+m7 <- mgcv::gam(PA ~ s(E,N, k=200, bs = "gp") +
+                s(BEC_habitata, k=2, bs = "re"),
+                data=Marmot_data,
+                method = "REML",
+                family=binomial
+         )
+## Warning: gam.fit3 algorithm did not converge - see Simon Wood response (https://stat.ethz.ch/pipermail/r-help/2007-December/148688.html). 
+summary(m7)
+
+m8 = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                s(Climate_MSP, BEC_habitat, k=5, m=1, bs = "fs") +  # fs = factor smooth
+                s(Climate_DD_0, BEC_habitat, k=5, m=1, bs = "fs") + 
+                s(Climate_PAS, BEC_habitat, k=5, m=1, bs = "fs") + 
+                s(TKDN_Rough, BEC_habitat, k=5, m=1, bs = "fs") +
+                s(Vegetation, BEC_habitat, k=5, m=1, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                family=binomial
+         )
+## Warning: gam.fit3 algorithm did not converge - see Simon Wood response (https://stat.ethz.ch/pipermail/r-help/2007-December/148688.html).         
+summary(m8)                                     # summary of the GAM results
+
+
+m9 = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                s(Climate_MSP, BEC_habitata, k=5, m=1, bs = "fs") +  # fs = factor smooth
+                s(Climate_DD_0, BEC_habitata, k=5, m=1, bs = "fs") + 
+                s(Climate_PAS, BEC_habitata, k=5, m=1, bs = "fs") + 
+                s(TKDN_Rough, BEC_habitata, k=5, m=1, bs = "fs") +
+                s(Vegetation, BEC_habitata, k=5, m=1, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                family=binomial
+         )
+## Warning: gam.fit3 algorithm did not converge - see Simon Wood response (https://stat.ethz.ch/pipermail/r-help/2007-December/148688.html).         
+summary(m9)                                     # summary of the GAM results
+
+
+
+```
+
+## Comparing the models
+
+The statistical approach that we used to analyze the GAM data is an information-theoretic approach (Anderson et al. 2000; Lewis et al. 2011; Dormann et al. 2018). The Akaike Information Critorion (AIC) is a likelihood statistic that falls under the information-theoretic approach, where tests for significance setting a pre-set P-value threshold are not used. Rather, the AIC approach gives a measure of goodness of fit while adding a penalty for each parameter that is added to the model. The different models are ranked and the model with the lowest AIC score is has a higher likelihood than competitors (Anderson and Burnham 2002). Models with AIC-∆i values <2 are considered as good as the best and other models where ∆i < 6 should not be ignored (c.f. Symonds and Moussalli, 2011).
+
+Anderson, D. R., & Burnham, K. P. (2002). Avoiding pitfalls when using information-theoretic methods. The Journal of Wildlife Management, 66(3), 912.
+
+Anderson, D. R., Burnham, K. P., & Thompson, W. L. (2000). Null Hypothesis Testing: Problems, Prevalence, and an Alternative. The Journal of Wildlife Management, 64(4), 912–923. doi:10.2307/3803199
+
+Dormann, C. F., Calabrese, J. M., Guillera‐Arroita, G., Matechou, E., Bahn, V., Bartoń, K., … Hartig, F. (2018). Model averaging in ecology: A review of Bayesian, information-theoretic, and tactical approaches for predictive inference. Ecological Monographs, 88(4), 485–504. doi:10.1002/ecm.1309
+
+Lewis, F., Butler, A., & Gilbert, L. (2011). A unified approach to model selection using the likelihood ratio test. Methods in Ecology and Evolution, 2(2), 155–162. doi:10.1111/j.2041-210X.2010.00063.x
+
+Symonds, M. R. E., & Moussalli, A. (2011). A brief guide to model selection, multimodel inference and model averaging in behavioural ecology using Akaike’s information criterion. Behavioral Ecology and Sociobiology, 65(1), 13–21. doi:10.1007/s00265-010-1037-6
+
+```{r echo = FALSE}
+
+if (!require(pROC,lme4)) install.packages('pROC','lme4')
+
+library(pROC)
+library(lme4)
+
+
+## m2 invariably gives the lowest AIC - even with heuristic changes to the fitters.
+
+gam.check(m2) ## the k-index is mostly >1, the roughness and vegetation are 0.99, but not significant.Try one more k to give it more wiggliness.
+
+m2b = mgcv::gam(PA ~ s(E, N, k=300, bs = "ds") +
+                s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2b)                                     # summary of the GAM results
+#gam.check(m2b) ## the k-index is mostly >1, the roughness and vegetation are 0.99, but not significant.
+
+
+m2c = mgcv::gam(PA ~ s(E, N, k=250, bs = "gp") +
+                s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs"),
+                #s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2c)                                     # summary of the GAM results
+#gam.check(m2c)
+
+m2d = mgcv::gam(PA ~ s(E, N, k=250, bs = "gp") +
+                s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs"), 
+                #s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2d)                                     # summary of the GAM results
+#gam.check(m2d)
+
+
+m2e = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs"), 
+                #s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs"), 
+                #s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2e)                                     # summary of the GAM results
+#gam.check(m2e)
+
+m2f = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs"),
+                #s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                #s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs"), 
+                #s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2f)                                     # summary of the GAM results
+#gam.check(m2f)
+
+
+m2g = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                #s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs"), 
+                #s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2g)                                     # summary of the GAM results
+#gam.check(m2g)
+
+m2h = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                #s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                #s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs"), 
+                s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs"),
+                #s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2h)                                     # summary of the GAM results
+#gam.check(m2h)
+
+m2i = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                #s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                #s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs"), 
+                s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2i)                                     # summary of the GAM results
+#gam.check(m2i)
+
+
+m2j = mgcv::gam(PA ~ s(E, N, k=200, bs = "gp") +
+                #s(Climate_MSP, HR_hibernate, k=8, m=2, bs = "fs") +
+                #s(Climate_DD_0, HR_hibernate, k=8, m=2, bs = "fs") + 
+                #s(Climate_PAS, HR_hibernate, k=8, m=2, bs = "fs"), 
+                #s(TKDN_Rough, HR_hibernate, k=8, m=2, bs = "fs") +
+                s(Vegetation, HR_hibernate, k=8, m=2, bs = "fs"),
+                data=Marmot_data,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2j)                                     # summary of the GAM results
+#gam.check(m2j)
+
+## Models that converged properly and did not terminate with step failure:
+# m1, m2b, m9, m2j
+AIC(m1, m2b, m9, m2j)
+AIC(m1,m2,m4,m5,m6,m7,m8,m9,m2b,m2c,m2d,m2e,m2f,m2g,m2h,m2i,m2j)
+
+#          df       AIC
+#m1  26.44709 133.01087
+#m2  13.96241  53.49535
+#m3  18.52045  79.89216
+#m4  14.20470  63.84358
+#m5  38.28834 271.52191
+#m6  35.42023 200.48411
+#m7  28.84265 162.23424
+#m8  35.21605 138.59433
+#m9  30.15320 130.88754
+#m2b 13.60832  50.36725
+#m2c 16.93755  70.63190
+#m2d 15.83226  76.27791
+#m2e 15.51284  75.31354
+#m2f 15.55020  75.41499
+#m2g 16.23277  86.48213
+#m2h 17.81177 108.38686
+#m2i 13.26735  74.87002
+#m2j 12.55265  77.42642
+
+```
+
+## Mapping the predictions of the models
+
+The prediction function (predict.gam) operates on a matrix (or dataframe) object that contains the values of the model covariates. 
+
+```{r echo = FALSE}
+
+## Specify just the model rasters:
+M1Rasters <- terra::rast(dir(here::here("HSDM_Marmot", "Inputs"), pattern = paste0(c("Climate_MSP.tif$","Climate_DD_0.tif$","Climate_PAS.tif$","TKDN_Rough.tif$","Vegetation.tif$","^HR_hibernate.tif$"), collapse = "|"), full.names = TRUE))
+
+## Terra approach
+
+r.df <- terra::as.data.frame(M1Rasters, xy=TRUE, na.rm = FALSE)
+r3 <- rast(M1Rasters, nlyr=ncol(r.df))
+values(r3) <- as.matrix(r.df)
+names(r3) <- colnames(r.df)
+
+## Obtain the coordinates of the explanatory raster cells and put them into a matrix
+Blank1 <- terra::xyFromCell(M1Rasters[[6]], cells(M1Rasters[[6]]))
+XYMatrix <- as.matrix(Blank1)
+names(XYMatrix)[names(XYMatrix) == "x"] <- "E"
+names(XYMatrix)[names(XYMatrix) == "y"] <- "N"
+
+##  Extract the values of all the cells that are in the explanatory SpatRasters
+Cellval <- terra::extract(x = M1Rasters, y = XYMatrix, cells = TRUE, xy=TRUE)
+names(Cellval)[names(Cellval) == "x"] <- "E"
+names(Cellval)[names(Cellval) == "y"] <- "N"
+
+Cellval <- Cellval[,c(7:9,1:6)] # Organizes cell values into first column with the input rasters to follow.
+  
+test_pred <- predict.gam(m2b, newdata = Cellval, type = "response", block.size = 500, newdata.guaranteed = TRUE)
+test_pred_mat <- as.matrix(test_pred)
+
+saveRDS(test_pred_mat, file=paste0(here::here("HSDM_Marmot","Outputs"),"/Predict_m2b.Rda"))
+
+Cells_Expl <- cbind(XYMatrix,Cellval)
+Prediction_df <- as.data.frame(cbind(Cells_Expl,test_pred_mat))
+Prediction_df$test_pred_mat <- as.factor(Prediction_df$test_pred_mat)
+
+saveRDS(Prediction_df, file=paste0(here::here("HSDM_Marmot","Outputs"),"/Predict_m2j.Rda"))
+
+M1_Pred <- rast(Prediction_df,type="xyz")
+M2b_Pred <- M1_Pred[[10]]
+saveRDS(M2b_Pred, file=paste0(here::here("HSDM_Marmot","Outputs"),"/M2b_Pred"))
+
+
+plot(M1_Pred, main = "Distribution of <i>Marmota caligata</i>")
+
+```
+
+## Lower resolution 50 m pixels
+
+This code chuck is what produced the prediction used for the sampling plan. The 10 m resolution script (above) was too large for processing. An updated script was used to complete the model runs to simplify and assist with revision as may be needed. The script here should be used to run any future models a higher resolution. The older higher resolution script (above) is retained as a legacy. However, the models were tested at the lower resolution for their information content but there was a clear winner that was used here at the lower 50 m resolution. The final raster output was normalized and re-scaled to a 0 to 1 to simplify the output for communication. This was then stratified into the following likelihood bins:
+
+0 to 40% = low
+40% to 80% = med
+80 to 100% = high
+
+The end product is then ported to the final Rmd document titled Marmot_Stratification.Rmd
+
+```{r Low_res_model}
+
+## Pseudo absence with env strat = 0.8
+Presence_Points_F5 <- Presence_Points_F5[,c(8:10,2:7)]
+pseu_abs_F5 <- pseu_abs_F5[,c(8:10,2:7)]
+colnames(Presence_Points_F5) <- c("cells", "E", "N", "Climate_MSP_F5", "Climate_DD_0_F5", "Climate_PAS_F5","TKDN_Rough_F5", "Vegetation_F5","HR_hibernate_F5")
+colnames(pseu_abs_F5) <- c("cells", "E", "N", "Climate_MSP_F5", "Climate_DD_0_F5", "Climate_PAS_F5","TKDN_Rough_F5", "Vegetation_F5","HR_hibernate_F5")
+
+Presence_Points_F5$PA <- 1
+pseu_abs_F5$PA <- 0
+
+Marmot_data_F5 <- rbind(Presence_Points_F5,pseu_abs_F5)
+Marmot_data_F5$HR_hibernate <- factor(Marmot_data_F5$HR_hibernate)
+Marmot_data_F5$PA <- factor(Marmot_data_F5$PA)
+
+Marmot_data_F5$cells <- as.numeric(Marmot_data_F5$cells)
+Marmot_data_F5$Climate_MSP_F5 <- as.numeric(Marmot_data_F5$Climate_MSP_F5)
+Marmot_data_F5$Climate_DD_0_F5 <- as.numeric(Marmot_data_F5$Climate_DD_0_F5)
+Marmot_data_F5$Climate_PAS_F5 <- as.numeric(Marmot_data_F5$Climate_PAS_F5)
+Marmot_data_F5$HR_hibernate_F5 <- as.numeric(Marmot_data_F5$HR_hibernate_F5)
+Marmot_data_F5$TKDN_Rough_F5 <- as.numeric(Marmot_data_F5$TKDN_Rough_F5)
+Marmot_data_F5$Vegetation_F5 <- as.numeric(Marmot_data_F5$Vegetation_F5)
+
+Climate_DD_0_F5 <- ExpRastersr_F5[[1]]
+Climate_MSP_F5 <- ExpRastersr_F5[[2]]
+Climate_PAS_F5 <- ExpRastersr_F5[[3]]
+HR_hibernate_F5 <- ExpRastersr_F5[[4]]
+TKDN_Rough_F5 <- ExpRastersr_F5[[5]]
+Vegetation_F5 <- ExpRastersr_F5[[6]]
+
+m2b_F5 = mgcv::gam(PA ~ s(E, N, k=300, bs = "ds") +
+                s(Climate_MSP_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") +
+                s(Climate_DD_0_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") + 
+                s(Climate_PAS_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") + 
+                s(TKDN_Rough_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") +
+                s(Vegetation_F5, HR_hibernate_F5, k=8, m=2, bs = "fs"),
+                data=Marmot_data_F5,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+        
+summary(m2b_F5)
+saveRDS(m2b_F5,file=paste0(here::here("HSDM_Marmot","Outputs"),"/m2b_F5.rda"))
+m2b_F5 = readRDS(paste0(here::here("HSDM_Marmot","Outputs"),"/m2b_F5.rda"))
+
+
+m4_F5 <- mgcv::gam(PA ~ s(E,N, k=300, bs = "gp") +
+                s(Climate_MSP_F5, k=8, m=2) +
+                s(TKDN_Rough_F5, k=8, m=2) +
+                s(HR_hibernate_F5, k=4, bs = 're'), ## Categorical variable requires a "random effect" - basis function
+                data=Marmot_data_F5,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+
+
+summary(m4)
+
+xrast <- yrast <- raster(nrows = nrow(raster(ExpRastersr_F5[[1]])), ncols=ncol(raster(ExpRastersr_F5[[1]])), ext = extent(raster(ExpRastersr_F5[[1]])))
+
+xrast[] <- coordinates(xrast)[,1]
+yrast[] <- coordinates(yrast)[,2]
+
+xrast <- rast(xrast)
+yrast <- rast(yrast)
+crs(xrast) <- crs(ExpRastersr_F5)
+crs(yrast) <- crs(ExpRastersr_F5)
+pred_stack <- ExpRastersr_F5
+pred_stack$E <- xrast
+pred_stack$N <- yrast
+
+exp_points <- raster::rasterToPoints(raster(pred_stack$Vegetation_F5))
+exp_points <- as.data.frame(exp_points)
+exp_points <- exp_points[,c(1:2)]
+coordinates(exp_points) <- c(1,2)
+crs(exp_points) <- crs(pred_stack)
+
+pred_df <- raster::extract(x = stack(ExpRastersr_F5), y = exp_points, cellnumbers = TRUE, sp=TRUE)
+pred_df <- as.data.frame(pred_df)
+names(pred_df)[names(pred_df) == "x"] <- "E"
+names(pred_df)[names(pred_df) == "y"] <- "N"
+
+test_pred_F5 <- predict.gam(m4_F5,pred_df, type = "response")
+exp_points$test <- as.vector(test_pred_F5)
+blank_rast <- ExpRastersr_F5[[1]]
+names(blank_rast) <- "blank"
+values(blank_rast) <- 0
+  
+pred_test <- terra::rasterize(vect(exp_points),blank_rast, field="test")
+
+writeRaster(pred_test, paste0(here::here("HSDM_Marmot", "Outputs"),"/","Prediction_F5_m4.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+Predmb2 <- rast(paste0(here::here("HSDM_Marmot", "Outputs"),"/","Prediction_F5_m2b.tif"))
+
+## Normalize
+library(caret)
+test <- as.matrix(exp_points$test)
+colnames(test) <- "val"
+preproc1 <- preProcess(test, method=c("center","scale"))
+norm1 <- predict(preproc1,test)
+exp_points$test <- as.vector(norm1)
+pred_test_norm <- terra::rasterize(vect(exp_points),blank_rast, field="test")
+
+##Min-max scale 0 to 1
+test <- as.matrix(exp_points$test)
+colnames(test) <- "val"
+preproc1 <- preProcess(test, method=c("range"))
+norm2 <- predict(preproc1,test)
+exp_points$test <- as.vector(norm2)
+pred_test_01 <- terra::rasterize(vect(exp_points),blank_rast, field="test")
+
+writeRaster(pred_test_01, paste0(here::here("HSDM_Marmot", "Outputs"),"/Prediction_F5_m2b_01.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+
+Poly_pred_test_01 <- as.polygons(pred_test_01, dissolve=TRUE)
+
+
+## Normalize
+library(caret)
+test <- as.matrix(exp_points$test)
+colnames(test) <- "val"
+preproc1 <- preProcess(test, method=c("center","scale"))
+norm1 <- predict(preproc1,test)
+exp_points$test <- as.vector(norm1)
+pred_test_norm <- terra::rasterize(vect(exp_points),blank_rast, field="test")
+
+##Min-max scale 0 to 1
+test <- as.matrix(exp_points$test)
+colnames(test) <- "val"
+preproc1 <- preProcess(test, method=c("range"))
+norm2 <- predict(preproc1,test)
+exp_points$test <- as.vector(norm2)
+pred_test_01 <- terra::rasterize(vect(exp_points),blank_rast, field="test")
+
+
+## Stratify the 0 to 1 scale
+m <- c(0, 0.4, 1,
+       0.4, 0.8, 2,
+       0.8, 1, 3
+       )
+rclmat <- matrix(m, ncol = 3, byrow=TRUE)
+rcl <- classify(pred_test_01, rclmat, include.lowest=TRUE)
+coltb <- data.frame(value=1:3, col=heat.colors(3))
+has.colors(rcl)
+coltab(rcl) <- coltb
+
+Poly_rcl_01 <- as.polygons(rcl, dissolve=TRUE, trunc=FALSE)
+Poly_rcl_01$rank <- c("low","med","high")
+
+writeVector(Poly_rcl_01,paste0(here::here("HSDM_Marmot", "Outputs"),"/Marmot_Prediction.shp"))
+
+
+```
+
+## Other methods
+
+These models were explored to look at alternative ways of predicting the data. However, the final vetting of these were not checked. The information is retained for future analysis.
+
+```{r other}
+## BAM approach
+m2b_F5bam = mgcv::bam(PA ~ s(E, N, k=300, bs = "ds") +
+                s(Climate_MSP_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") +
+                s(Climate_DD_0_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") + 
+                s(Climate_PAS_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") + 
+                s(TKDN_Rough_F5, HR_hibernate_F5, k=8, m=2, bs = "fs") +
+                s(Vegetation_F5, HR_hibernate_F5, k=8, m=2, bs = "fs"),
+                data=Marmot_data_F5,
+                method = "REML",
+                #optimizer="efs",
+                family=binomial
+         )
+saveRDS(m2b_F5bam,file=paste0(here::here("HSDM_Marmot","Outputs"),"/m2b_F5bam.rda"))
+
+test_pred_F5bam <- predict.gam(m2b_F5bam,pred_df, type = "response")
+exp_points$test <- as.vector(test_pred_F5bam)
+blank_rast <- ExpRastersr_F5[[1]]
+names(blank_rast) <- "blank"
+values(blank_rast) <- "NA"
+
+pred_testbam <- terra::rasterize(vect(exp_points),blank_rast, field="test")
+
+writeRaster(pred_testbam, paste0(here::here("HSDM_Marmot", "Outputs"),"/","Prediction_F5_m2b_bam.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+
+
+## Without Pseudo absence attempted. I was unable to solve issues with covariate combinations and degrees of freedom.
+Presence_Points_F5 <- Presence_Points_F5[,c(8:10,2:7)]
+colnames(Presence_Points_F5) <- c("cells", "E", "N", "Climate_MSP_F5", "Climate_DD_0_F5", "Climate_PAS_F5","TKDN_Rough_F5", "Vegetation_F5","HR_hibernate_F5")
+
+Presence_Points_F5$PA <- 1
+
+Marmot_data_F5 <- Presence_Points_F5
+Marmot_data_F5$HR_hibernate <- factor(Marmot_data_F5$HR_hibernate)
+Marmot_data_F5$PA <- factor(Marmot_data_F5$PA)
+
+Marmot_data_F5$cells <- as.numeric(Marmot_data_F5$cells)
+Marmot_data_F5$Climate_MSP_F5 <- as.numeric(Marmot_data_F5$Climate_MSP_F5)
+Marmot_data_F5$Climate_DD_0_F5 <- as.numeric(Marmot_data_F5$Climate_DD_0_F5)
+Marmot_data_F5$Climate_PAS_F5 <- as.numeric(Marmot_data_F5$Climate_PAS_F5)
+Marmot_data_F5$HR_hibernate_F5 <- as.numeric(Marmot_data_F5$HR_hibernate_F5)
+Marmot_data_F5$TKDN_Rough_F5 <- as.numeric(Marmot_data_F5$TKDN_Rough_F5)
+Marmot_data_F5$Vegetation_F5 <- as.numeric(Marmot_data_F5$Vegetation_F5)
+
+Climate_DD_0_F5 <- ExpRastersr_F5[[1]]
+Climate_MSP_F5 <- ExpRastersr_F5[[2]]
+Climate_PAS_F5 <- ExpRastersr_F5[[3]]
+HR_hibernate_F5 <- ExpRastersr_F5[[4]]
+TKDN_Rough_F5 <- ExpRastersr_F5[[5]]
+Vegetation_F5 <- ExpRastersr_F5[[6]]
+
+m2b_F5p = mgcv::gam(PA ~ s(E, N, k=900, bs = "ds") +
+                s(Climate_MSP_F5, HR_hibernate_F5, k=c(2,4), m=2, bs = c("ds","re")) +
+                s(Climate_DD_0_F5, HR_hibernate_F5, k=c(2,4), m=2, bs = c("ds","re")) + 
+                s(Climate_PAS_F5, HR_hibernate_F5, k=c(2,4), m=2, bs = c("ds","re")) + 
+                s(TKDN_Rough_F5, HR_hibernate_F5, k=c(2,4), m=2, bs = c("ds","re")) +
+                s(Vegetation_F5, HR_hibernate_F5, k=c(2,4), m=2, bs = c("ds","re")),
+                data=Marmot_data_F5,
+                method = "REML",
+                optimizer="efs",
+                family=Gamma
+         )
+        
+summary(m2b_F5)
+saveRDS(m2b_F5,file=paste0(here::here("HSDM_Marmot","Outputs"),"/m2b_F5.rda"))
+m2b_F5 = readRDS(paste0(here::here("HSDM_Marmot","Outputs"),"/m2b_F5.rda"))
+
+
+m4_F5 <- mgcv::gam(PA ~ s(E,N, k=300, bs = "gp") +
+                s(Climate_MSP_F5, k=8, m=2) +
+                s(TKDN_Rough_F5, k=8, m=2) +
+                s(HR_hibernate_F5, k=4, bs = 're'), ## Categorical variable requires a "random effect" - basis function
+                data=Marmot_data_F5,
+                method = "REML",
+                optimizer="efs",
+                family=binomial
+         )
+
+xrast <- yrast <- raster(nrows = nrow(raster(ExpRastersr_F5[[1]])), ncols=ncol(raster(ExpRastersr_F5[[1]])), ext = extent(raster(ExpRastersr_F5[[1]])))
+
+xrast[] <- coordinates(xrast)[,1]
+yrast[] <- coordinates(yrast)[,2]
+
+xrast <- rast(xrast)
+yrast <- rast(yrast)
+
+pred_stack <- ExpRastersr_F5
+pred_stack$E <- xrast
+pred_stack$N <- yrast
+
+exp_points <- raster::rasterToPoints(raster(pred_stack$Vegetation_F5))
+exp_points <- as.data.frame(exp_points)
+exp_points <- exp_points[,c(1:2)]
+coordinates(exp_points) <- c(1,2)
+crs(exp_points) <- crs(pred_stack)
+
+pred_df <- raster::extract(x = stack(ExpRastersr_F5), y = exp_points, cellnumbers = TRUE, sp=TRUE)
+pred_df <- as.data.frame(pred_df)
+names(pred_df)[names(pred_df) == "x"] <- "E"
+names(pred_df)[names(pred_df) == "y"] <- "N"
+
+test_pred_F5 <- predict.gam(m2b_F5,pred_df, type = "response")
+exp_points$test <- as.vector(test_pred_F5)
+blank_rast <- ExpRastersr_F5[[1]]
+names(blank_rast) <- "blank"
+values(blank_rast) <- 0
+  
+pred_test <- terra::rasterize(vect(exp_points),blank_rast, field="test")
+
+writeRaster(pred_test, paste0(here::here("HSDM_Marmot", "Outputs"),"/","Prediction_F5_m2b.tif"),overwrite=TRUE, gdal=c("COMPRESS=DEFLATE", "TFW=YES"))
+
+
+```
+
+
+
+# PseuAbs package: Global Biodiversity Information Facility standards
+
+This code chunk was used in training and learning how to access the functions in the new PseuAbs package. Examples from the PseuAbs package are taken from the Global Biodiversity Information Facility API. Hence, the marmot data will follow these formatting standards.
+
+
+```{r pseudo, echo=FALSE}
+
+# Predictors
+bio=raster::getData('worldclim',var='bio',lon=16, lat=48,res=.5)
+bio=bio[[c(1,4,12)]]
+
+# extract species
+spn1='Boletus aestivalis'
+xt=as.vector(extent(bio))
+baest <- occ_search(scientificName=spn1,
+                    hasCoordinate=TRUE,
+                    decimalLongitude=paste0(xt[1],",",xt[3]),
+                    decimalLatitude=paste0(xt[2],",",xt[4])
+                    )
+
+pbaest=baest$data[,c('decimalLongitude','decimalLatitude')]
+
+baest_spp=SpatialPoints(pbaest,proj4string = crs(bio))
+
+spn2='Boletus edulis'
+bedu <- occ_search(scientificName=spn2,
+                   hasCoordinate=TRUE,
+                   decimalLongitude=paste0(xt[1],",",xt[3]),
+                   decimalLatitude=paste0(xt[2],",",xt[4])
+                   )
+
+pbedu=bedu$data[,c('decimalLongitude','decimalLatitude')]
+bedu_spp=SpatialPoints(pbedu,proj4string = crs(bio))
+
+### =========================================================================
+### Sample pseudoabsences
+### =========================================================================
+# Geo.start
+
+pseu.abs1 = wsl.samplePseuAbs(type="geo.strat",
+                            n=5000,
+                            env.stack=bio,
+                            pres=baest_spp,
+                            geores_fact=3,
+                            add.strat=0,
+                            taxon=spn1)
+
+## This is a manual entry into the developers version:
+
+xy_pres=pseu.abs1@xy[which(pseu.abs1@pa==1),]
+xy_abs=pseu.abs1@xy[which(pseu.abs1@pa==0),]
+rst=raster(pseu.abs1@meta$template_file)
+
+ plot(rst,col=c("#f0f0f0","#99d8c9"),
+     main=pseu.abs1@meta$type,legend=F)
+  points(xy_abs,pch=16,cex=.2,col="#00000020")
+  points(xy_pres,pch=3,cex=.5,col="darkred")
+
+  
+```  
+  
+
